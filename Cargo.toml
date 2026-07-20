@@ -1,0 +1,61 @@
+[package]
+name = "api_sapaai"
+version = "0.1.0"
+edition = "2024"
+authors = ["Hylmi Muhammad Fiary Mahdi <[EMAIL_ADDRESS]>"]
+description = "CRM API built with Axum, MySQL, and in-process WhatsApp Web integration."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-username/api_sapaai"
+
+[dependencies]
+# Async runtime.
+tokio = { version = "1.53.0", features = ["full"] }
+
+# Web framework.
+axum = { version = "0.8.9", features = ["multipart"] }
+
+# Tower middleware and service utilities.
+tower = { version = "0.5.2", features = ["timeout"] }
+tower-http = { version = "0.6.2", features = ["trace", "timeout", "cors"] }
+
+# Serialization / deserialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Observability.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Load `.env` files in development.
+dotenvy = "0.15"
+
+# Error handling helpers.
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Common domain types.
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.16", features = ["v4", "serde"] }
+
+# Database and security.
+mysql = { version = "28.0.0", default-features = false, features = ["default-rust"] }
+bcrypt = "0.16"
+
+# In-process WhatsApp Web session. Requires nightly (wacore uses `if let` guards).
+whatsapp-rust = { git = "https://github.com/jlucaso1/whatsapp-rust", rev = "d9e693f5446c9e0747b6b8766dd543beb8191e2b", default-features = false, features = [
+    "sqlite-storage",
+    "tokio-transport",
+    "tokio-runtime",
+    "ureq-client",
+    "tokio-native",
+    "signal",
+] }
+whatsapp-rust-tokio-transport = { git = "https://github.com/jlucaso1/whatsapp-rust", rev = "d9e693f5446c9e0747b6b8766dd543beb8191e2b" }
+whatsapp-rust-ureq-http-client = { git = "https://github.com/jlucaso1/whatsapp-rust", rev = "d9e693f5446c9e0747b6b8766dd543beb8191e2b" }
+wacore = { git = "https://github.com/jlucaso1/whatsapp-rust", rev = "d9e693f5446c9e0747b6b8766dd543beb8191e2b", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+base64 = "0.22"
+
+[dev-dependencies]
+# ServiceExt::oneshot is useful for integration tests with Axum.
+tower = { version = "0.5.2", features = ["util"] }

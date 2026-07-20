@@ -1,0 +1,4 @@
+# whatsapp-rust (via wacore) uses `if let` guards, stabilized only on nightly.
+# The whole crate therefore builds on nightly.
+[toolchain]
+channel = "nightly"

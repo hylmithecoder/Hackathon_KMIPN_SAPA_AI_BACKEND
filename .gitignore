@@ -1,0 +1,8 @@
+/target
+.env
+*.log
+.DS_Store
+/storage
+.implementation/
+.roadmap/
+*.pdf
