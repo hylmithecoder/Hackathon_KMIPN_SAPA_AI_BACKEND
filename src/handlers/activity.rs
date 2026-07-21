@@ -3,6 +3,10 @@ use crate::error::AppError;
 use crate::models::activity::{CreateActivityDto, UpdateActivityDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{
+    map_mysql_err, opt_str, opt_u64, req_str, req_u64, validate_company, validate_contact,
+    validate_deal, validate_user,
+};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -18,27 +22,27 @@ const ACTIVITY_COLUMNS: &str = "a.id, a.activity_type, a.subject, a.description,
     a.assigned_to, u.full_name AS assigned_name, a.due_date, a.completed_at, a.status, \
     a.created_by, a.created_at, a.updated_at";
 
-fn row_to_activity(row: &mut mysql::Row) -> Activity {
-    Activity {
-        id: row.take("id").unwrap_or_default(),
-        activity_type: row.take("activity_type").unwrap_or_default(),
-        subject: row.take("subject").unwrap_or_default(),
-        description: row.take("description"),
-        contact_id: row.take("contact_id"),
-        contact_name: row.take("contact_name"),
-        deal_id: row.take("deal_id"),
-        deal_title: row.take("deal_title"),
-        company_id: row.take("company_id"),
-        company_name: row.take("company_name"),
-        assigned_to: row.take("assigned_to"),
-        assigned_name: row.take("assigned_name"),
-        due_date: row.take("due_date"),
-        completed_at: row.take("completed_at"),
-        status: row.take("status").unwrap_or_default(),
-        created_by: row.take("created_by"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_activity(row: &mut mysql::Row) -> Result<Activity, AppError> {
+    Ok(Activity {
+        id: req_u64(row, "id")?,
+        activity_type: req_str(row, "activity_type")?,
+        subject: req_str(row, "subject")?,
+        description: opt_str(row, "description"),
+        contact_id: opt_u64(row, "contact_id"),
+        contact_name: opt_str(row, "contact_name"),
+        deal_id: opt_u64(row, "deal_id"),
+        deal_title: opt_str(row, "deal_title"),
+        company_id: opt_u64(row, "company_id"),
+        company_name: opt_str(row, "company_name"),
+        assigned_to: opt_u64(row, "assigned_to"),
+        assigned_name: opt_str(row, "assigned_name"),
+        due_date: opt_str(row, "due_date"),
+        completed_at: opt_str(row, "completed_at"),
+        status: req_str(row, "status")?,
+        created_by: opt_u64(row, "created_by"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 pub async fn list_activities(
@@ -47,7 +51,7 @@ pub async fn list_activities(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let activities: Vec<Activity> = conn
         .query_map(
@@ -61,7 +65,9 @@ pub async fn list_activities(
             ),
             |mut row: mysql::Row| row_to_activity(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(activities))
 }
@@ -80,7 +86,20 @@ pub async fn create_activity(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
+    }
+    if let Some(deal_id) = payload.deal_id {
+        validate_deal(&mut conn, deal_id, "deal_id")?;
+    }
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+    }
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO activities (activity_type, subject, description, contact_id, deal_id, company_id, assigned_to, due_date) \
@@ -96,7 +115,7 @@ pub async fn create_activity(
             "due_date" => payload.due_date.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let activity = Activity {
@@ -134,7 +153,7 @@ pub async fn get_activity(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let activity: Option<Activity> = conn
         .exec_first(
@@ -148,8 +167,9 @@ pub async fn get_activity(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_activity(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_activity(&mut row))
+        .transpose()?;
 
     match activity {
         Some(a) => Ok(ApiResponse::success(a)),
@@ -165,7 +185,7 @@ pub async fn update_activity(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Activity> = conn
         .exec_first(
@@ -179,8 +199,9 @@ pub async fn update_activity(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_activity(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_activity(&mut row))
+        .transpose()?;
 
     let Some(mut activity) = existing else {
         return Err(AppError::NotFound);
@@ -198,17 +219,21 @@ pub async fn update_activity(
     if payload.description.is_some() {
         activity.description = payload.description;
     }
-    if payload.contact_id.is_some() {
-        activity.contact_id = payload.contact_id;
+    if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
+        activity.contact_id = Some(contact_id);
     }
-    if payload.deal_id.is_some() {
-        activity.deal_id = payload.deal_id;
+    if let Some(deal_id) = payload.deal_id {
+        validate_deal(&mut conn, deal_id, "deal_id")?;
+        activity.deal_id = Some(deal_id);
     }
-    if payload.company_id.is_some() {
-        activity.company_id = payload.company_id;
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+        activity.company_id = Some(company_id);
     }
-    if payload.assigned_to.is_some() {
-        activity.assigned_to = payload.assigned_to;
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+        activity.assigned_to = Some(assigned_to);
     }
     if payload.due_date.is_some() {
         activity.due_date = payload.due_date;
@@ -238,7 +263,7 @@ pub async fn update_activity(
             "status" => &activity.status,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -254,13 +279,13 @@ pub async fn delete_activity(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM activities WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
@@ -279,13 +304,13 @@ pub async fn mark_activity_done(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "UPDATE activities SET status = 'completed', completed_at = NOW() WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);

@@ -3,6 +3,10 @@ use crate::error::AppError;
 use crate::models::ticket::{CreateTicketDto, TicketStatusDto, UpdateTicketDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{
+    map_mysql_err, opt_str, opt_u64, req_str, req_u64, validate_company, validate_contact,
+    validate_user,
+};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -16,26 +20,26 @@ const TICKET_COLUMNS: &str = "t.id, t.ticket_number, t.subject, t.description, t
     CONCAT(c.first_name, ' ', IFNULL(c.last_name, '')) AS contact_name, t.company_id, co.name AS company_name, \
     t.assigned_to, u.full_name AS assigned_name, t.priority, t.status, t.source, t.resolved_at, t.closed_at, t.created_at, t.updated_at";
 
-fn row_to_ticket(row: &mut mysql::Row) -> Ticket {
-    Ticket {
-        id: row.take("id").unwrap_or_default(),
-        ticket_number: row.take("ticket_number").unwrap_or_default(),
-        subject: row.take("subject").unwrap_or_default(),
-        description: row.take("description").unwrap_or_default(),
-        contact_id: row.take("contact_id"),
-        contact_name: row.take("contact_name"),
-        company_id: row.take("company_id"),
-        company_name: row.take("company_name"),
-        assigned_to: row.take("assigned_to"),
-        assigned_name: row.take("assigned_name"),
-        priority: row.take("priority").unwrap_or_default(),
-        status: row.take("status").unwrap_or_default(),
-        source: row.take("source"),
-        resolved_at: row.take("resolved_at"),
-        closed_at: row.take("closed_at"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_ticket(row: &mut mysql::Row) -> Result<Ticket, AppError> {
+    Ok(Ticket {
+        id: req_u64(row, "id")?,
+        ticket_number: req_str(row, "ticket_number")?,
+        subject: req_str(row, "subject")?,
+        description: req_str(row, "description")?,
+        contact_id: opt_u64(row, "contact_id"),
+        contact_name: opt_str(row, "contact_name"),
+        company_id: opt_u64(row, "company_id"),
+        company_name: opt_str(row, "company_name"),
+        assigned_to: opt_u64(row, "assigned_to"),
+        assigned_name: opt_str(row, "assigned_name"),
+        priority: req_str(row, "priority")?,
+        status: req_str(row, "status")?,
+        source: opt_str(row, "source"),
+        resolved_at: opt_str(row, "resolved_at"),
+        closed_at: opt_str(row, "closed_at"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 pub async fn list_tickets(
@@ -44,7 +48,7 @@ pub async fn list_tickets(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let tickets: Vec<Ticket> = conn
         .query_map(
@@ -57,7 +61,9 @@ pub async fn list_tickets(
             ),
             |mut row: mysql::Row| row_to_ticket(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(tickets))
 }
@@ -79,7 +85,17 @@ pub async fn create_ticket(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
+    }
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+    }
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO tickets (ticket_number, subject, description, contact_id, company_id, assigned_to, priority, source) \
@@ -95,7 +111,7 @@ pub async fn create_ticket(
             "source" => &source,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let ticket = Ticket {
@@ -132,7 +148,7 @@ pub async fn get_ticket(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let ticket: Option<Ticket> = conn
         .exec_first(
@@ -145,8 +161,9 @@ pub async fn get_ticket(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_ticket(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_ticket(&mut row))
+        .transpose()?;
 
     match ticket {
         Some(t) => Ok(ApiResponse::success(t)),
@@ -162,7 +179,7 @@ pub async fn update_ticket(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Ticket> = conn
         .exec_first(
@@ -175,8 +192,9 @@ pub async fn update_ticket(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_ticket(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_ticket(&mut row))
+        .transpose()?;
 
     let Some(mut ticket) = existing else {
         return Err(AppError::NotFound);
@@ -191,14 +209,17 @@ pub async fn update_ticket(
     if let Some(description) = payload.description {
         ticket.description = description;
     }
-    if payload.contact_id.is_some() {
-        ticket.contact_id = payload.contact_id;
+    if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
+        ticket.contact_id = Some(contact_id);
     }
-    if payload.company_id.is_some() {
-        ticket.company_id = payload.company_id;
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+        ticket.company_id = Some(company_id);
     }
-    if payload.assigned_to.is_some() {
-        ticket.assigned_to = payload.assigned_to;
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+        ticket.assigned_to = Some(assigned_to);
     }
     if let Some(priority) = payload.priority {
         ticket.priority = priority;
@@ -221,7 +242,7 @@ pub async fn update_ticket(
             "source" => &ticket.source,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -242,7 +263,7 @@ pub async fn update_ticket_status(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let status = payload.status.trim();
     let sql = match status {
@@ -254,7 +275,7 @@ pub async fn update_ticket_status(
     };
 
     conn.exec_drop(sql, params! { "id" => id, "status" => status })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);
@@ -274,10 +295,10 @@ pub async fn delete_ticket(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM tickets WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::notification::CreateNotificationDto;
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, validate_user};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -48,14 +49,14 @@ pub async fn list_notifications(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let notifications = conn
         .query_map(
             format!("SELECT {NOTIFICATION_COLUMNS} FROM notifications ORDER BY id DESC"),
             map_notification,
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(notifications))
 }
@@ -76,7 +77,9 @@ pub async fn create_notification(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    validate_user(&mut conn, payload.user_id, "user_id")?;
 
     conn.exec_drop(
         "INSERT INTO notifications (user_id, title, body, category, entity_type, entity_id) \
@@ -90,7 +93,7 @@ pub async fn create_notification(
             "entity_id" => payload.entity_id,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let notification = Notification {
@@ -116,11 +119,11 @@ pub async fn unread_count(State(state): State<AppState>) -> Result<ApiResponse<u
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let count: Option<u64> = conn
         .query_first("SELECT COUNT(*) FROM notifications WHERE is_read = 0")
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(count.unwrap_or(0)))
 }
@@ -132,13 +135,13 @@ pub async fn mark_read(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "UPDATE notifications SET is_read = 1 WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);
@@ -153,7 +156,7 @@ pub async fn mark_read(
             format!("SELECT {NOTIFICATION_COLUMNS} FROM notifications WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_notification);
 
     match notification {
@@ -166,10 +169,10 @@ pub async fn mark_all_read(State(state): State<AppState>) -> Result<ApiResponse<
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("UPDATE notifications SET is_read = 1 WHERE is_read = 0", ())
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -185,13 +188,13 @@ pub async fn delete_notification(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM notifications WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

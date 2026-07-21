@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::deal_stage::{CreateDealStageDto, ReorderDealStageDto, UpdateDealStageDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, opt_str, req_bool, req_f64, req_i32, req_str, req_u64};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -14,16 +15,16 @@ use mysql::prelude::*;
 
 const STAGE_COLUMNS: &str = "id, name, position, probability, color, is_active, created_at";
 
-fn row_to_stage(row: &mut mysql::Row) -> DealStage {
-    DealStage {
-        id: row.take("id").unwrap_or_default(),
-        name: row.take("name").unwrap_or_default(),
-        position: row.take("position").unwrap_or_default(),
-        probability: row.take("probability").unwrap_or_default(),
-        color: row.take("color"),
-        is_active: row.take::<i8, _>("is_active").unwrap_or(1) != 0,
-        created_at: row.take("created_at"),
-    }
+fn row_to_stage(row: &mut mysql::Row) -> Result<DealStage, AppError> {
+    Ok(DealStage {
+        id: req_u64(row, "id")?,
+        name: req_str(row, "name")?,
+        position: req_i32(row, "position")?,
+        probability: req_f64(row, "probability")?,
+        color: opt_str(row, "color"),
+        is_active: req_bool(row, "is_active")?,
+        created_at: opt_str(row, "created_at"),
+    })
 }
 
 pub async fn list_stages(
@@ -32,14 +33,16 @@ pub async fn list_stages(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let stages: Vec<DealStage> = conn
         .query_map(
             format!("SELECT {STAGE_COLUMNS} FROM deal_stages ORDER BY position, id"),
             |mut row: mysql::Row| row_to_stage(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(stages))
 }
@@ -55,7 +58,7 @@ pub async fn create_stage(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "INSERT INTO deal_stages (name, position, probability, color) VALUES (:name, :position, :probability, :color)",
@@ -66,7 +69,7 @@ pub async fn create_stage(
             "color" => payload.color.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let stage = DealStage {
@@ -93,15 +96,16 @@ pub async fn get_stage(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let stage: Option<DealStage> = conn
         .exec_first(
             format!("SELECT {STAGE_COLUMNS} FROM deal_stages WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_stage(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_stage(&mut row))
+        .transpose()?;
 
     match stage {
         Some(s) => Ok(ApiResponse::success(s)),
@@ -117,15 +121,16 @@ pub async fn update_stage(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<DealStage> = conn
         .exec_first(
             format!("SELECT {STAGE_COLUMNS} FROM deal_stages WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_stage(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_stage(&mut row))
+        .transpose()?;
 
     let Some(mut stage) = existing else {
         return Err(AppError::NotFound);
@@ -162,7 +167,7 @@ pub async fn update_stage(
             "is_active" => stage.is_active as i8,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -178,13 +183,13 @@ pub async fn delete_stage(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM deal_stages WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
@@ -203,14 +208,14 @@ pub async fn reorder_stages(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     for (position, id) in payload.ordered_ids.iter().enumerate() {
         conn.exec_drop(
             "UPDATE deal_stages SET position = :position WHERE id = :id",
             params! { "position" => position as i32, "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
     }
 
     state

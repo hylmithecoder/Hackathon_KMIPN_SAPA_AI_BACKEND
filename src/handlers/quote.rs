@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::quote::{CreateQuoteDto, QuoteStatusDto, UpdateQuoteDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, opt_str, opt_u64, req_f64, req_str, req_u64, validate_deal, validate_product};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -18,37 +19,37 @@ const QUOTE_COLUMNS: &str = "q.id, q.deal_id, q.quote_number, q.issue_date, q.ex
 const QUOTE_ITEM_COLUMNS: &str =
     "id, quote_id, product_id, description, quantity, unit_price, discount, total";
 
-fn row_to_quote(row: &mut mysql::Row) -> Quote {
-    Quote {
-        id: row.take("id").unwrap_or_default(),
-        deal_id: row.take("deal_id").unwrap_or_default(),
-        quote_number: row.take("quote_number").unwrap_or_default(),
-        issue_date: row.take("issue_date").unwrap_or_default(),
-        expiry_date: row.take("expiry_date"),
-        subtotal: row.take("subtotal").unwrap_or_default(),
-        tax_rate: row.take("tax_rate").unwrap_or_default(),
-        tax_amount: row.take("tax_amount").unwrap_or_default(),
-        total_amount: row.take("total_amount").unwrap_or_default(),
-        currency: row.take("currency").unwrap_or_default(),
-        status: row.take("status").unwrap_or_default(),
-        notes: row.take("notes"),
-        created_by: row.take("created_by"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_quote(row: &mut mysql::Row) -> Result<Quote, AppError> {
+    Ok(Quote {
+        id: req_u64(row, "id")?,
+        deal_id: req_u64(row, "deal_id")?,
+        quote_number: req_str(row, "quote_number")?,
+        issue_date: req_str(row, "issue_date")?,
+        expiry_date: opt_str(row, "expiry_date"),
+        subtotal: req_f64(row, "subtotal")?,
+        tax_rate: req_f64(row, "tax_rate")?,
+        tax_amount: req_f64(row, "tax_amount")?,
+        total_amount: req_f64(row, "total_amount")?,
+        currency: req_str(row, "currency")?,
+        status: req_str(row, "status")?,
+        notes: opt_str(row, "notes"),
+        created_by: opt_u64(row, "created_by"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
-fn row_to_quote_item(row: &mut mysql::Row) -> QuoteItem {
-    QuoteItem {
-        id: row.take("id").unwrap_or_default(),
-        quote_id: row.take("quote_id").unwrap_or_default(),
-        product_id: row.take("product_id"),
-        description: row.take("description").unwrap_or_default(),
-        quantity: row.take("quantity").unwrap_or_default(),
-        unit_price: row.take("unit_price").unwrap_or_default(),
-        discount: row.take("discount").unwrap_or_default(),
-        total: row.take("total").unwrap_or_default(),
-    }
+fn row_to_quote_item(row: &mut mysql::Row) -> Result<QuoteItem, AppError> {
+    Ok(QuoteItem {
+        id: req_u64(row, "id")?,
+        quote_id: req_u64(row, "quote_id")?,
+        product_id: opt_u64(row, "product_id"),
+        description: req_str(row, "description")?,
+        quantity: req_f64(row, "quantity")?,
+        unit_price: req_f64(row, "unit_price")?,
+        discount: req_f64(row, "discount")?,
+        total: req_f64(row, "total")?,
+    })
 }
 
 fn calc_quote_totals(
@@ -74,14 +75,16 @@ pub async fn list_quotes(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let quotes: Vec<Quote> = conn
         .query_map(
             format!("SELECT {QUOTE_COLUMNS} FROM quotes q ORDER BY q.id DESC"),
             |mut row: mysql::Row| row_to_quote(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(quotes))
 }
@@ -104,7 +107,9 @@ pub async fn create_quote(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    validate_deal(&mut conn, payload.deal_id, "deal_id")?;
 
     conn.exec_drop(
         "INSERT INTO quotes (deal_id, quote_number, issue_date, expiry_date, subtotal, tax_rate, tax_amount, total_amount, currency, notes) \
@@ -122,11 +127,14 @@ pub async fn create_quote(
             "notes" => payload.notes.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let quote_id = conn.last_insert_id();
 
     for item in &payload.items {
+        if let Some(product_id) = item.product_id {
+            validate_product(&mut conn, product_id, "product_id")?;
+        }
         let discount = item.discount.unwrap_or(0.0);
         let total = (item.quantity * item.unit_price - discount).max(0.0);
         conn.exec_drop(
@@ -142,7 +150,7 @@ pub async fn create_quote(
                 "total" => total,
             },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
     }
 
     let quote = Quote {
@@ -177,15 +185,16 @@ pub async fn get_quote(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let quote: Option<Quote> = conn
         .exec_first(
             format!("SELECT {QUOTE_COLUMNS} FROM quotes q WHERE q.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_quote(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_quote(&mut row))
+        .transpose()?;
 
     match quote {
         Some(q) => Ok(ApiResponse::success(q)),
@@ -200,7 +209,7 @@ pub async fn list_quote_items(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let items: Vec<QuoteItem> = conn
         .exec_map(
@@ -208,7 +217,9 @@ pub async fn list_quote_items(
             params! { "id" => id },
             |mut row: mysql::Row| row_to_quote_item(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(items))
 }
@@ -221,15 +232,16 @@ pub async fn update_quote(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Quote> = conn
         .exec_first(
             format!("SELECT {QUOTE_COLUMNS} FROM quotes q WHERE q.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_quote(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_quote(&mut row))
+        .transpose()?;
 
     let Some(mut quote) = existing else {
         return Err(AppError::NotFound);
@@ -274,7 +286,7 @@ pub async fn update_quote(
             "notes" => &quote.notes,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -295,13 +307,13 @@ pub async fn update_quote_status(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "UPDATE quotes SET status = :status WHERE id = :id",
         params! { "id" => id, "status" => payload.status.trim() },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);
@@ -321,10 +333,10 @@ pub async fn delete_quote(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM quotes WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

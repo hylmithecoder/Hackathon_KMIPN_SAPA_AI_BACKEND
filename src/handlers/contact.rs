@@ -3,6 +3,10 @@ use crate::error::AppError;
 use crate::models::contact::{CreateContactDto, TagContactDto, UpdateContactDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{
+    map_mysql_err, opt_str, opt_u64, req_str, req_u64, validate_company, validate_tag,
+    validate_user,
+};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -15,39 +19,42 @@ use mysql::prelude::*;
 const CONTACT_COLUMNS: &str = "c.id, c.first_name, c.last_name, c.email, c.phone, c.job_title, \
     c.company_id, co.name AS company_name, c.source, c.status, c.assigned_to, c.description, c.created_at, c.updated_at";
 
-fn row_to_contact(row: &mut mysql::Row) -> Contact {
-    Contact {
-        id: row.take("id").unwrap_or_default(),
-        first_name: row.take("first_name").unwrap_or_default(),
-        last_name: row.take("last_name"),
-        email: row.take("email"),
-        phone: row.take("phone"),
-        job_title: row.take("job_title"),
-        company_id: row.take("company_id"),
-        company_name: row.take("company_name"),
-        source: row.take("source"),
-        status: row.take("status").unwrap_or_default(),
-        assigned_to: row.take("assigned_to"),
-        description: row.take("description"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_contact(row: &mut mysql::Row) -> Result<Contact, AppError> {
+    Ok(Contact {
+        id: req_u64(row, "id")?,
+        first_name: req_str(row, "first_name")?,
+        last_name: opt_str(row, "last_name"),
+        email: opt_str(row, "email"),
+        phone: opt_str(row, "phone"),
+        job_title: opt_str(row, "job_title"),
+        company_id: opt_u64(row, "company_id"),
+        company_name: opt_str(row, "company_name"),
+        source: opt_str(row, "source"),
+        status: req_str(row, "status")?,
+        assigned_to: opt_u64(row, "assigned_to"),
+        description: opt_str(row, "description"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 fn apply_tags(
     conn: &mut mysql::PooledConn,
     contact_id: u64,
     tag_ids: &[u64],
-) -> Result<(), mysql::Error> {
+) -> Result<(), AppError> {
     conn.exec_drop(
         "DELETE FROM contact_tags WHERE contact_id = :contact_id",
         params! { "contact_id" => contact_id },
-    )?;
+    )
+    .map_err(map_mysql_err)?;
     for tag_id in tag_ids {
+        validate_tag(conn, *tag_id, "tag_id")?;
         conn.exec_drop(
             "INSERT IGNORE INTO contact_tags (contact_id, tag_id) VALUES (:contact_id, :tag_id)",
             params! { "contact_id" => contact_id, "tag_id" => tag_id },
-        )?;
+        )
+        .map_err(map_mysql_err)?;
     }
     Ok(())
 }
@@ -58,14 +65,16 @@ pub async fn list_contacts(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let contacts: Vec<Contact> = conn
         .query_map(
             format!("SELECT {CONTACT_COLUMNS} FROM contacts c LEFT JOIN companies co ON c.company_id = co.id ORDER BY c.id DESC"),
             |mut row: mysql::Row| row_to_contact(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(contacts))
 }
@@ -84,7 +93,14 @@ pub async fn create_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+    }
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO contacts (first_name, last_name, email, phone, job_title, company_id, source, status, assigned_to, description) \
@@ -102,13 +118,12 @@ pub async fn create_contact(
             "description" => payload.description.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
 
     if let Some(tag_ids) = payload.tag_ids {
-        apply_tags(&mut conn, last_id, &tag_ids)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        apply_tags(&mut conn, last_id, &tag_ids)?;
     }
 
     let contact = Contact {
@@ -142,15 +157,16 @@ pub async fn get_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let contact: Option<Contact> = conn
         .exec_first(
             format!("SELECT {CONTACT_COLUMNS} FROM contacts c LEFT JOIN companies co ON c.company_id = co.id WHERE c.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_contact(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_contact(&mut row))
+        .transpose()?;
 
     match contact {
         Some(c) => Ok(ApiResponse::success(c)),
@@ -166,15 +182,16 @@ pub async fn update_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Contact> = conn
         .exec_first(
             format!("SELECT {CONTACT_COLUMNS} FROM contacts c LEFT JOIN companies co ON c.company_id = co.id WHERE c.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_contact(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_contact(&mut row))
+        .transpose()?;
 
     let Some(mut contact) = existing else {
         return Err(AppError::NotFound);
@@ -198,8 +215,9 @@ pub async fn update_contact(
     if payload.job_title.is_some() {
         contact.job_title = payload.job_title;
     }
-    if payload.company_id.is_some() {
-        contact.company_id = payload.company_id;
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+        contact.company_id = Some(company_id);
     }
     if payload.source.is_some() {
         contact.source = payload.source;
@@ -207,8 +225,9 @@ pub async fn update_contact(
     if let Some(status) = payload.status {
         contact.status = status;
     }
-    if payload.assigned_to.is_some() {
-        contact.assigned_to = payload.assigned_to;
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+        contact.assigned_to = Some(assigned_to);
     }
     if payload.description.is_some() {
         contact.description = payload.description;
@@ -232,10 +251,10 @@ pub async fn update_contact(
             "description" => &contact.description,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if let Some(tag_ids) = payload.tag_ids {
-        apply_tags(&mut conn, id, &tag_ids).map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        apply_tags(&mut conn, id, &tag_ids)?;
     }
 
     state
@@ -252,13 +271,13 @@ pub async fn delete_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM contacts WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
@@ -277,21 +296,25 @@ pub async fn list_contact_tags(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let tags: Vec<Tag> = conn
         .exec_map(
             "SELECT t.id, t.name, t.color, t.created_at FROM tags t \
              JOIN contact_tags ct ON t.id = ct.tag_id WHERE ct.contact_id = :id",
             params! { "id" => id },
-            |mut row: mysql::Row| Tag {
-                id: row.take("id").unwrap_or_default(),
-                name: row.take("name").unwrap_or_default(),
-                color: row.take("color"),
-                created_at: row.take("created_at"),
+            |mut row: mysql::Row| -> Result<Tag, AppError> {
+                Ok(Tag {
+                    id: req_u64(&mut row, "id")?,
+                    name: req_str(&mut row, "name")?,
+                    color: opt_str(&mut row, "color"),
+                    created_at: opt_str(&mut row, "created_at"),
+                })
             },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(tags))
 }
@@ -304,13 +327,15 @@ pub async fn add_tag_to_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    validate_tag(&mut conn, payload.tag_id, "tag_id")?;
 
     conn.exec_drop(
         "INSERT IGNORE INTO contact_tags (contact_id, tag_id) VALUES (:contact_id, :tag_id)",
         params! { "contact_id" => id, "tag_id" => payload.tag_id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -326,13 +351,13 @@ pub async fn remove_tag_from_contact(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM contact_tags WHERE contact_id = :contact_id AND tag_id = :tag_id",
         params! { "contact_id" => id, "tag_id" => tag_id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster

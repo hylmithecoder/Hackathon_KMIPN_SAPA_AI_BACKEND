@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::company::{CreateCompanyDto, UpdateCompanyDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, opt_str, opt_u64, req_str, req_u64, validate_user};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -15,22 +16,22 @@ use mysql::prelude::*;
 const COMPANY_COLUMNS: &str = "c.id, c.name, c.industry, c.website, c.phone, c.email, \
     c.address, c.city, c.country, c.description, c.assigned_to, c.created_at, c.updated_at";
 
-fn row_to_company(row: &mut mysql::Row) -> Company {
-    Company {
-        id: row.take("id").unwrap_or_default(),
-        name: row.take("name").unwrap_or_default(),
-        industry: row.take("industry"),
-        website: row.take("website"),
-        phone: row.take("phone"),
-        email: row.take("email"),
-        address: row.take("address"),
-        city: row.take("city"),
-        country: row.take("country"),
-        description: row.take("description"),
-        assigned_to: row.take("assigned_to"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_company(row: &mut mysql::Row) -> Result<Company, AppError> {
+    Ok(Company {
+        id: req_u64(row, "id")?,
+        name: req_str(row, "name")?,
+        industry: opt_str(row, "industry"),
+        website: opt_str(row, "website"),
+        phone: opt_str(row, "phone"),
+        email: opt_str(row, "email"),
+        address: opt_str(row, "address"),
+        city: opt_str(row, "city"),
+        country: opt_str(row, "country"),
+        description: opt_str(row, "description"),
+        assigned_to: opt_u64(row, "assigned_to"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 pub async fn list_companies(
@@ -39,14 +40,16 @@ pub async fn list_companies(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let companies: Vec<Company> = conn
         .query_map(
             format!("SELECT {COMPANY_COLUMNS} FROM companies c ORDER BY c.id DESC"),
             |mut row: mysql::Row| row_to_company(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(companies))
 }
@@ -62,7 +65,11 @@ pub async fn create_company(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO companies (name, industry, website, phone, email, address, city, country, description, assigned_to) \
@@ -80,7 +87,7 @@ pub async fn create_company(
             "assigned_to" => payload.assigned_to,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let company = Company {
@@ -113,15 +120,16 @@ pub async fn get_company(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let company: Option<Company> = conn
         .exec_first(
             format!("SELECT {COMPANY_COLUMNS} FROM companies c WHERE c.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_company(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_company(&mut row))
+        .transpose()?;
 
     match company {
         Some(c) => Ok(ApiResponse::success(c)),
@@ -137,15 +145,16 @@ pub async fn update_company(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Company> = conn
         .exec_first(
             format!("SELECT {COMPANY_COLUMNS} FROM companies c WHERE c.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_company(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_company(&mut row))
+        .transpose()?;
 
     let Some(mut company) = existing else {
         return Err(AppError::NotFound);
@@ -181,8 +190,9 @@ pub async fn update_company(
     if payload.description.is_some() {
         company.description = payload.description;
     }
-    if payload.assigned_to.is_some() {
-        company.assigned_to = payload.assigned_to;
+    if let Some(assigned_to) = payload.assigned_to {
+        validate_user(&mut conn, assigned_to, "assigned_to")?;
+        company.assigned_to = Some(assigned_to);
     }
 
     conn.exec_drop(
@@ -203,7 +213,7 @@ pub async fn update_company(
             "assigned_to" => company.assigned_to,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -219,13 +229,13 @@ pub async fn delete_company(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM companies WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

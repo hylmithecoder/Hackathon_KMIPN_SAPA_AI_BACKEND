@@ -3,6 +3,10 @@ use crate::error::AppError;
 use crate::models::deal::{CreateDealDto, DealStageMoveDto, UpdateDealDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{
+    map_mysql_err, opt_str, opt_u64, req_f64, req_str, req_u64, validate_company,
+    validate_contact, validate_deal_stage, validate_user,
+};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -18,34 +22,34 @@ const DEAL_COLUMNS: &str = "d.id, d.title, d.contact_id, \
     d.owner_id, u.full_name AS owner_name, d.value, d.currency, d.expected_close_date, \
     d.actual_close_date, d.status, d.description, d.created_at, d.updated_at";
 
-fn row_to_deal(row: &mut mysql::Row) -> Deal {
-    Deal {
-        id: row.take("id").unwrap_or_default(),
-        title: row.take("title").unwrap_or_default(),
-        contact_id: row.take("contact_id").unwrap_or_default(),
-        contact_name: row.take("contact_name"),
-        company_id: row.take("company_id"),
-        company_name: row.take("company_name"),
-        stage_id: row.take("stage_id").unwrap_or_default(),
-        stage_name: row.take("stage_name"),
-        owner_id: row.take("owner_id"),
-        owner_name: row.take("owner_name"),
-        value: row.take("value").unwrap_or_default(),
-        currency: row.take("currency").unwrap_or_default(),
-        expected_close_date: row.take("expected_close_date"),
-        actual_close_date: row.take("actual_close_date"),
-        status: row.take("status").unwrap_or_default(),
-        description: row.take("description"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_deal(row: &mut mysql::Row) -> Result<Deal, AppError> {
+    Ok(Deal {
+        id: req_u64(row, "id")?,
+        title: req_str(row, "title")?,
+        contact_id: req_u64(row, "contact_id")?,
+        contact_name: opt_str(row, "contact_name"),
+        company_id: opt_u64(row, "company_id"),
+        company_name: opt_str(row, "company_name"),
+        stage_id: req_u64(row, "stage_id")?,
+        stage_name: opt_str(row, "stage_name"),
+        owner_id: opt_u64(row, "owner_id"),
+        owner_name: opt_str(row, "owner_name"),
+        value: req_f64(row, "value")?,
+        currency: req_str(row, "currency")?,
+        expected_close_date: opt_str(row, "expected_close_date"),
+        actual_close_date: opt_str(row, "actual_close_date"),
+        status: req_str(row, "status")?,
+        description: opt_str(row, "description"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 pub async fn list_deals(State(state): State<AppState>) -> Result<ApiResponse<Vec<Deal>>, AppError> {
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let deals: Vec<Deal> = conn
         .query_map(
@@ -59,7 +63,9 @@ pub async fn list_deals(State(state): State<AppState>) -> Result<ApiResponse<Vec
             ),
             |mut row: mysql::Row| row_to_deal(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(deals))
 }
@@ -79,7 +85,16 @@ pub async fn create_deal(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    validate_contact(&mut conn, payload.contact_id, "contact_id")?;
+    validate_deal_stage(&mut conn, payload.stage_id, "stage_id")?;
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+    }
+    if let Some(owner_id) = payload.owner_id {
+        validate_user(&mut conn, owner_id, "owner_id")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO deals (title, contact_id, company_id, stage_id, owner_id, value, currency, expected_close_date, status, description) \
@@ -97,7 +112,7 @@ pub async fn create_deal(
             "description" => payload.description.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let deal = Deal {
@@ -135,7 +150,7 @@ pub async fn get_deal(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let deal: Option<Deal> = conn
         .exec_first(
@@ -149,8 +164,9 @@ pub async fn get_deal(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_deal(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_deal(&mut row))
+        .transpose()?;
 
     match deal {
         Some(d) => Ok(ApiResponse::success(d)),
@@ -166,7 +182,7 @@ pub async fn update_deal(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Deal> = conn
         .exec_first(
@@ -180,8 +196,9 @@ pub async fn update_deal(
             ),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_deal(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_deal(&mut row))
+        .transpose()?;
 
     let Some(mut deal) = existing else {
         return Err(AppError::NotFound);
@@ -194,16 +211,20 @@ pub async fn update_deal(
         deal.title = title;
     }
     if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
         deal.contact_id = contact_id;
     }
-    if payload.company_id.is_some() {
-        deal.company_id = payload.company_id;
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+        deal.company_id = Some(company_id);
     }
     if let Some(stage_id) = payload.stage_id {
+        validate_deal_stage(&mut conn, stage_id, "stage_id")?;
         deal.stage_id = stage_id;
     }
-    if payload.owner_id.is_some() {
-        deal.owner_id = payload.owner_id;
+    if let Some(owner_id) = payload.owner_id {
+        validate_user(&mut conn, owner_id, "owner_id")?;
+        deal.owner_id = Some(owner_id);
     }
     if let Some(value) = payload.value {
         deal.value = value;
@@ -244,7 +265,7 @@ pub async fn update_deal(
             "description" => &deal.description,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -260,10 +281,10 @@ pub async fn delete_deal(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM deals WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
@@ -283,23 +304,19 @@ pub async fn move_deal_stage(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
-    let stage_exists: Option<u8> = conn
-        .exec_first(
-            "SELECT 1 FROM deal_stages WHERE id = :id",
-            params! { "id" => payload.stage_id },
-        )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
-    if stage_exists.is_none() {
-        return Err(AppError::NotFound);
-    }
+    validate_deal_stage(&mut conn, payload.stage_id, "stage_id")?;
 
     conn.exec_drop(
         "UPDATE deals SET stage_id = :stage_id WHERE id = :id",
         params! { "id" => id, "stage_id" => payload.stage_id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
+
+    if conn.affected_rows() == 0 {
+        return Err(AppError::NotFound);
+    }
 
     state
         .broadcaster

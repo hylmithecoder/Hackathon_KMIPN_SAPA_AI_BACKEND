@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::models::auth::{LoginDto, LoginResponse, RegisterDto, UpdateUserDto, User};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::map_mysql_err;
 use crate::ws::event::ChangeAction;
 use axum::extract::FromRef;
 use axum::{
@@ -84,7 +85,7 @@ where
         let mut conn = app_state
             .pool
             .get_conn()
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+            .map_err(map_mysql_err)?;
 
         let user: Option<UserRow> = conn
             .exec_first(
@@ -95,7 +96,7 @@ where
                 ),
                 params! { "token" => token },
             )
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+            .map_err(map_mysql_err)?;
 
         match user {
             Some(row) => Ok(map_user(row)),
@@ -131,7 +132,7 @@ pub async fn login(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let db_user: Option<LoginRow> = conn
         .exec_first(
@@ -142,7 +143,7 @@ pub async fn login(
             ),
             params! { "ident" => &payload.username },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let (id, username, full_name, role, email, phone, photo_url, is_active, hashed_password) =
         match db_user {
@@ -164,7 +165,7 @@ pub async fn login(
             "token" => &token,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(LoginResponse {
         user: User {
@@ -205,7 +206,7 @@ pub async fn register(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let hashed_pass =
         bcrypt::hash(&payload.password, 10).map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
@@ -222,9 +223,11 @@ pub async fn register(
             "phone" => payload.phone.as_deref(),
         },
     )
-    .map_err(|e| {
-        crate::log_err!("Database error in register: {:?}", e);
-        AppError::Conflict("username or email already exists".into())
+    .map_err(|e| match e {
+        mysql::Error::MySqlError(ref err) if err.code == 1062 => {
+            AppError::Conflict("username or email already exists".into())
+        }
+        _ => map_mysql_err(e),
     })?;
 
     let last_id = conn.last_insert_id();
@@ -255,14 +258,14 @@ pub async fn list_users(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let users = conn
         .query_map(
             format!("SELECT {USER_COLUMNS} FROM users ORDER BY id"),
             map_user,
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(users))
 }
@@ -275,14 +278,14 @@ pub async fn update_user(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<UserRow> = conn
         .exec_first(
             format!("SELECT {USER_COLUMNS} FROM users WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let Some(row) = existing else {
         return Err(AppError::NotFound);
@@ -321,7 +324,7 @@ pub async fn update_user(
         _ => None,
     };
 
-    if let Some(hashed) = hashed_pass {
+    let result = if let Some(hashed) = hashed_pass {
         conn.exec_drop(
             "UPDATE users SET username = :username, full_name = :full_name, email = :email, \
              phone = :phone, role = :role, is_active = :is_active, password = :password \
@@ -351,10 +354,13 @@ pub async fn update_user(
                 "is_active" => user.is_active as i8,
             },
         )
-    }
-    .map_err(|e| {
-        crate::log_err!("Database error in update_user: {:?}", e);
-        AppError::Conflict("username or email already exists".into())
+    };
+
+    result.map_err(|e| match e {
+        mysql::Error::MySqlError(ref err) if err.code == 1062 => {
+            AppError::Conflict("username or email already exists".into())
+        }
+        _ => map_mysql_err(e),
     })?;
 
     state
@@ -371,10 +377,10 @@ pub async fn delete_user(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM users WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
@@ -390,13 +396,13 @@ pub async fn logout(State(state): State<AppState>, user: User) -> Result<StatusC
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM user_tokens WHERE user_id = :user_id",
         params! { "user_id" => user.id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     Ok(StatusCode::NO_CONTENT)
 }

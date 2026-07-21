@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::tag::{CreateTagDto, UpdateTagDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::map_mysql_err;
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -30,14 +31,14 @@ pub async fn list_tags(State(state): State<AppState>) -> Result<ApiResponse<Vec<
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let tags = conn
         .query_map(
             format!("SELECT {TAG_COLUMNS} FROM tags ORDER BY id DESC"),
             map_tag,
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(tags))
 }
@@ -53,7 +54,7 @@ pub async fn create_tag(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "INSERT INTO tags (name, color) VALUES (:name, :color)",
@@ -62,7 +63,7 @@ pub async fn create_tag(
             "color" => payload.color.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let tag = Tag {
@@ -86,14 +87,14 @@ pub async fn get_tag(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let tag: Option<Tag> = conn
         .exec_first(
             format!("SELECT {TAG_COLUMNS} FROM tags WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_tag);
 
     match tag {
@@ -110,14 +111,14 @@ pub async fn update_tag(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Tag> = conn
         .exec_first(
             format!("SELECT {TAG_COLUMNS} FROM tags WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_tag);
 
     let Some(mut tag) = existing else {
@@ -142,7 +143,7 @@ pub async fn update_tag(
             "color" => &tag.color,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -158,10 +159,10 @@ pub async fn delete_tag(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM tags WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

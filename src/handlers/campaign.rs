@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::campaign::{CampaignStatusDto, CreateCampaignDto, UpdateCampaignDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, opt_f64, opt_str, opt_u64, req_str, req_u64};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -15,25 +16,25 @@ use mysql::prelude::*;
 const CAMPAIGN_COLUMNS: &str = "id, name, campaign_type, status, start_date, end_date, budget, currency, \
     target_audience, message_template, sent_count, delivered_count, responded_count, created_by, created_at, updated_at";
 
-fn row_to_campaign(row: &mut mysql::Row) -> Campaign {
-    Campaign {
-        id: row.take("id").unwrap_or_default(),
-        name: row.take("name").unwrap_or_default(),
-        campaign_type: row.take("campaign_type").unwrap_or_default(),
-        status: row.take("status").unwrap_or_default(),
-        start_date: row.take("start_date"),
-        end_date: row.take("end_date"),
-        budget: row.take("budget"),
-        currency: row.take("currency").unwrap_or_default(),
-        target_audience: row.take("target_audience"),
-        message_template: row.take("message_template"),
-        sent_count: row.take("sent_count").unwrap_or_default(),
-        delivered_count: row.take("delivered_count").unwrap_or_default(),
-        responded_count: row.take("responded_count").unwrap_or_default(),
-        created_by: row.take("created_by"),
-        created_at: row.take("created_at"),
-        updated_at: row.take("updated_at"),
-    }
+fn row_to_campaign(row: &mut mysql::Row) -> Result<Campaign, AppError> {
+    Ok(Campaign {
+        id: req_u64(row, "id")?,
+        name: req_str(row, "name")?,
+        campaign_type: req_str(row, "campaign_type")?,
+        status: req_str(row, "status")?,
+        start_date: opt_str(row, "start_date"),
+        end_date: opt_str(row, "end_date"),
+        budget: opt_f64(row, "budget"),
+        currency: req_str(row, "currency")?,
+        target_audience: opt_str(row, "target_audience"),
+        message_template: opt_str(row, "message_template"),
+        sent_count: req_u64(row, "sent_count")?,
+        delivered_count: req_u64(row, "delivered_count")?,
+        responded_count: req_u64(row, "responded_count")?,
+        created_by: opt_u64(row, "created_by"),
+        created_at: opt_str(row, "created_at"),
+        updated_at: opt_str(row, "updated_at"),
+    })
 }
 
 pub async fn list_campaigns(
@@ -42,14 +43,16 @@ pub async fn list_campaigns(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let campaigns: Vec<Campaign> = conn
         .query_map(
             format!("SELECT {CAMPAIGN_COLUMNS} FROM campaigns ORDER BY id DESC"),
             |mut row: mysql::Row| row_to_campaign(&mut row),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ApiResponse::success(campaigns))
 }
@@ -70,7 +73,7 @@ pub async fn create_campaign(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "INSERT INTO campaigns (name, campaign_type, start_date, end_date, budget, currency, target_audience, message_template) \
@@ -86,7 +89,7 @@ pub async fn create_campaign(
             "message_template" => payload.message_template.as_deref(),
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let campaign = Campaign {
@@ -122,15 +125,16 @@ pub async fn get_campaign(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let campaign: Option<Campaign> = conn
         .exec_first(
             format!("SELECT {CAMPAIGN_COLUMNS} FROM campaigns WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_campaign(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_campaign(&mut row))
+        .transpose()?;
 
     match campaign {
         Some(c) => Ok(ApiResponse::success(c)),
@@ -146,15 +150,16 @@ pub async fn update_campaign(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Campaign> = conn
         .exec_first(
             format!("SELECT {CAMPAIGN_COLUMNS} FROM campaigns WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
-        .map(|mut row: mysql::Row| row_to_campaign(&mut row));
+        .map_err(map_mysql_err)?
+        .map(|mut row: mysql::Row| row_to_campaign(&mut row))
+        .transpose()?;
 
     let Some(mut campaign) = existing else {
         return Err(AppError::NotFound);
@@ -208,7 +213,7 @@ pub async fn update_campaign(
             "message_template" => &campaign.message_template,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -229,13 +234,13 @@ pub async fn update_campaign_status(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "UPDATE campaigns SET status = :status WHERE id = :id",
         params! { "id" => id, "status" => payload.status.trim() },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);
@@ -255,13 +260,13 @@ pub async fn delete_campaign(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM campaigns WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

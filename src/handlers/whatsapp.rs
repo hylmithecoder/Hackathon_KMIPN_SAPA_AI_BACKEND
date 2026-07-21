@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::whatsapp::SendWhatsappDto;
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::map_mysql_err;
 use crate::ws::event::ChangeAction;
 use axum::{Json, extract::State, http::StatusCode};
 use mysql::params;
@@ -35,7 +36,7 @@ pub async fn get_status(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let session: Option<WhatsappSession> = conn
         .exec_first(
@@ -43,7 +44,7 @@ pub async fn get_status(
              FROM whatsapp_sessions ORDER BY id LIMIT 1",
             (),
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(
             |(id, name, sender_number, wa_status, wa_qr, wa_paired_at, updated_at): WhatsappSessionRow| WhatsappSession {
                 id,
@@ -94,11 +95,11 @@ pub async fn wa_send(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let session_id: Option<u64> = conn
         .query_first("SELECT id FROM whatsapp_sessions ORDER BY id LIMIT 1")
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let session_id = session_id.ok_or(AppError::NotFound)?;
 
@@ -115,7 +116,7 @@ pub async fn wa_send(
             "message" => message,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let log_id = conn.last_insert_id();
 
@@ -125,7 +126,7 @@ pub async fn wa_send(
                 "UPDATE whatsapp_messages SET wa_message_id = :wa_message_id, status = 'sent', sent_at = NOW() WHERE id = :id",
                 params! { "wa_message_id" => wa_message_id, "id" => log_id },
             )
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+            .map_err(map_mysql_err)?;
             state
                 .broadcaster
                 .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
@@ -136,7 +137,7 @@ pub async fn wa_send(
                 "UPDATE whatsapp_messages SET status = 'failed', error_message = :error WHERE id = :id",
                 params! { "error" => &e, "id" => log_id },
             )
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+            .map_err(map_mysql_err)?;
             Err(AppError::BadRequest(e))
         }
     }
@@ -156,7 +157,7 @@ pub async fn list_messages(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let messages = conn
         .query_map(
@@ -174,7 +175,7 @@ pub async fn list_messages(
                 created_at,
             },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(messages))
 }

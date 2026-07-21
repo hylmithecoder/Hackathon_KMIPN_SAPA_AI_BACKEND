@@ -112,14 +112,12 @@ async fn handle_socket(
         loop {
             match rx.recv().await {
                 Ok(message) => {
-                    if let Some(ref filter) = entity_filter {
-                        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&message) {
-                            if let Some(serde_json::Value::String(entity)) = event.get("entity") {
-                                if !filter.contains(entity) {
-                                    continue;
-                                }
-                            }
-                        }
+                    if let Some(ref filter) = entity_filter
+                        && let Ok(event) = serde_json::from_str::<serde_json::Value>(&message)
+                        && let Some(serde_json::Value::String(entity)) = event.get("entity")
+                        && !filter.contains(entity)
+                    {
+                        continue;
                     }
 
                     if sender

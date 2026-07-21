@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::product::{CreateProductDto, UpdateProductDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::map_mysql_err;
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -61,14 +62,14 @@ pub async fn list_products(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let products = conn
         .query_map(
             format!("SELECT {PRODUCT_COLUMNS} FROM products ORDER BY id DESC"),
             map_product,
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(products))
 }
@@ -86,7 +87,7 @@ pub async fn create_product(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "INSERT INTO products (name, sku, description, category, unit_price, currency) \
@@ -100,7 +101,7 @@ pub async fn create_product(
             "currency" => &currency,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let product = Product {
@@ -130,14 +131,14 @@ pub async fn get_product(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let product: Option<Product> = conn
         .exec_first(
             format!("SELECT {PRODUCT_COLUMNS} FROM products WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_product);
 
     match product {
@@ -154,14 +155,14 @@ pub async fn update_product(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Product> = conn
         .exec_first(
             format!("SELECT {PRODUCT_COLUMNS} FROM products WHERE id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_product);
 
     let Some(mut product) = existing else {
@@ -207,7 +208,7 @@ pub async fn update_product(
             "is_active" => product.is_active as i8,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -223,13 +224,13 @@ pub async fn delete_product(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop(
         "DELETE FROM products WHERE id = :id",
         params! { "id" => id },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state

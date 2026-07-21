@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::note::{CreateNoteDto, UpdateNoteDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::utils::db::{map_mysql_err, validate_company, validate_contact, validate_deal};
 use crate::ws::event::ChangeAction;
 use axum::{
     Json,
@@ -43,14 +44,14 @@ pub async fn list_notes(State(state): State<AppState>) -> Result<ApiResponse<Vec
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let notes = conn
         .query_map(
             format!("SELECT {NOTE_COLUMNS} FROM notes n ORDER BY n.id DESC"),
             map_note,
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     Ok(ApiResponse::success(notes))
 }
@@ -66,7 +67,17 @@ pub async fn create_note(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
+
+    if let Some(contact_id) = payload.contact_id {
+        validate_contact(&mut conn, contact_id, "contact_id")?;
+    }
+    if let Some(deal_id) = payload.deal_id {
+        validate_deal(&mut conn, deal_id, "deal_id")?;
+    }
+    if let Some(company_id) = payload.company_id {
+        validate_company(&mut conn, company_id, "company_id")?;
+    }
 
     conn.exec_drop(
         "INSERT INTO notes (content, contact_id, deal_id, company_id) \
@@ -78,7 +89,7 @@ pub async fn create_note(
             "company_id" => payload.company_id,
         },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     let last_id = conn.last_insert_id();
     let note = Note {
@@ -106,14 +117,14 @@ pub async fn get_note(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let note: Option<Note> = conn
         .exec_first(
             format!("SELECT {NOTE_COLUMNS} FROM notes n WHERE n.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_note);
 
     match note {
@@ -130,14 +141,14 @@ pub async fn update_note(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     let existing: Option<Note> = conn
         .exec_first(
             format!("SELECT {NOTE_COLUMNS} FROM notes n WHERE n.id = :id"),
             params! { "id" => id },
         )
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+        .map_err(map_mysql_err)?
         .map(map_note);
 
     let Some(mut note) = existing else {
@@ -155,7 +166,7 @@ pub async fn update_note(
         "UPDATE notes SET content = :content WHERE id = :id",
         params! { "id" => id, "content" => &note.content },
     )
-    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    .map_err(map_mysql_err)?;
 
     state
         .broadcaster
@@ -171,10 +182,10 @@ pub async fn delete_note(
     let mut conn = state
         .pool
         .get_conn()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     conn.exec_drop("DELETE FROM notes WHERE id = :id", params! { "id" => id })
-        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+        .map_err(map_mysql_err)?;
 
     if conn.affected_rows() > 0 {
         state
