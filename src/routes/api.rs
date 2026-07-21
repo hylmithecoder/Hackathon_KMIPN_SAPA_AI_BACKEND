@@ -16,6 +16,7 @@ use crate::{
     },
     middleware,
     state::AppState,
+    ws,
 };
 
 async fn fallback(
@@ -71,6 +72,8 @@ pub fn router() -> Router<AppState> {
         // Health (also exposed at /api/v1/health for convenience)
         .route("/api/v1/health", get(health::health_check))
         .route("/api/v1/health/ready", get(health::readiness))
+        // Real-time WebSocket endpoint
+        .route("/api/v1/ws", get(ws::ws_handler))
         // Auth
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/register", post(auth::register))

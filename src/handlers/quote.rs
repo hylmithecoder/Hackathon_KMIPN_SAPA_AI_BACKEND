@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::quote::{CreateQuoteDto, QuoteStatusDto, UpdateQuoteDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -162,6 +163,10 @@ pub async fn create_quote(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("quote", ChangeAction::Created, Some(quote_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(quote)))
 }
 
@@ -271,6 +276,10 @@ pub async fn update_quote(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("quote", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(quote))
 }
 
@@ -298,6 +307,10 @@ pub async fn update_quote_status(
         return Err(AppError::NotFound);
     }
 
+    state
+        .broadcaster
+        .notify("quote", ChangeAction::Updated, Some(id));
+
     get_quote(Path(id), State(state)).await
 }
 
@@ -314,6 +327,9 @@ pub async fn delete_quote(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("quote", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

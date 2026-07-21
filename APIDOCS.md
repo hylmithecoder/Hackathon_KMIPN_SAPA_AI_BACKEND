@@ -38,6 +38,7 @@ All API responses follow a unified JSON envelope format:
 13. [Tags](#13-tags)
 14. [Notifications](#14-notifications)
 15. [WhatsApp Integration](#15-whatsapp-integration)
+16. [Real-Time WebSocket](#16-real-time-websocket)
 
 ---
 
@@ -944,3 +945,48 @@ Default admin account seeded on startup:
 
 ### GET `/api/v1/whatsapp/messages`
 - **Description:** List recently logged outgoing WhatsApp messages.
+
+---
+
+## 16. Real-Time WebSocket
+
+### `WS /api/v1/ws`
+
+- **Description:** Open a WebSocket connection to receive real-time change events. Whenever a CRM entity is created, updated, or deleted, the server pushes a JSON event to all connected clients. This removes the need to manually refresh GET endpoints.
+- **Authentication:** Required. Because browser WebSocket clients cannot send custom headers, pass the bearer token via the `token` query parameter. Non-browser clients may alternatively send `Authorization: Bearer <token>`.
+- **Query Params:**
+  - `token` (required) — active bearer session token obtained from `POST /api/v1/auth/login`.
+  - `entities` (optional, comma-separated) — filter events by entity type. Example: `?entities=company,contact,deal`
+- **Error (401 Unauthorized):**
+```json
+{
+  "success": false,
+  "message": "Invalid or expired token"
+}
+```
+- **Message Format (server → client):**
+```json
+{
+  "event": "change",
+  "entity": "company",
+  "action": "updated",
+  "id": 5,
+  "timestamp": "2026-07-20T12:34:56Z"
+}
+```
+- **Actions:** `created`, `updated`, `deleted`
+- **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `activity`, `note`, `product`, `quote`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
+
+### Example JavaScript client
+```javascript
+const token = 'your-bearer-token-from-login';
+const ws = new WebSocket(
+  `ws://localhost:5790/api/v1/ws?token=${token}&entities=company,contact`
+);
+
+ws.onmessage = (event) => {
+  const change = JSON.parse(event.data);
+  console.log('Real-time change:', change);
+  // Refresh relevant list or detail view
+};
+```

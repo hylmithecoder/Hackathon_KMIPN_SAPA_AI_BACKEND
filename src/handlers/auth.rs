@@ -2,6 +2,7 @@ use crate::error::AppError;
 use crate::models::auth::{LoginDto, LoginResponse, RegisterDto, UpdateUserDto, User};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::extract::FromRef;
 use axum::{
     Json,
@@ -228,6 +229,10 @@ pub async fn register(
 
     let last_id = conn.last_insert_id();
 
+    state
+        .broadcaster
+        .notify("user", ChangeAction::Created, Some(last_id));
+
     Ok((
         StatusCode::CREATED,
         ApiResponse::success(User {
@@ -352,6 +357,10 @@ pub async fn update_user(
         AppError::Conflict("username or email already exists".into())
     })?;
 
+    state
+        .broadcaster
+        .notify("user", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(user))
 }
 
@@ -368,6 +377,9 @@ pub async fn delete_user(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("user", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

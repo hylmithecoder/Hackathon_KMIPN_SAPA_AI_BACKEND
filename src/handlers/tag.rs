@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::tag::{CreateTagDto, UpdateTagDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -70,6 +71,10 @@ pub async fn create_tag(
         color: payload.color,
         created_at: None,
     };
+
+    state
+        .broadcaster
+        .notify("tag", ChangeAction::Created, Some(last_id));
 
     Ok((StatusCode::CREATED, ApiResponse::success(tag)))
 }
@@ -139,6 +144,10 @@ pub async fn update_tag(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("tag", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(tag))
 }
 
@@ -155,6 +164,9 @@ pub async fn delete_tag(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("tag", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

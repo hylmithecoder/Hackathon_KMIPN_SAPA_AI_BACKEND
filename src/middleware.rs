@@ -184,4 +184,3 @@ mod tests {
         assert_eq!(&body_bytes[..], b"echo: hello world");
     }
 }
-

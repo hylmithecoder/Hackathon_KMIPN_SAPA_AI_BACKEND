@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::ticket::{CreateTicketDto, TicketStatusDto, UpdateTicketDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -117,6 +118,10 @@ pub async fn create_ticket(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("ticket", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(ticket)))
 }
 
@@ -218,6 +223,10 @@ pub async fn update_ticket(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("ticket", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(ticket))
 }
 
@@ -251,6 +260,10 @@ pub async fn update_ticket_status(
         return Err(AppError::NotFound);
     }
 
+    state
+        .broadcaster
+        .notify("ticket", ChangeAction::Updated, Some(id));
+
     get_ticket(Path(id), State(state)).await
 }
 
@@ -267,6 +280,9 @@ pub async fn delete_ticket(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("ticket", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

@@ -12,7 +12,10 @@ repository = "https://github.com/your-username/api_sapaai"
 tokio = { version = "1.53.0", features = ["full"] }
 
 # Web framework.
-axum = { version = "0.8.9", features = ["multipart"] }
+axum = { version = "0.8.9", features = ["multipart", "ws"] }
+
+# WebSocket utilities.
+futures = "0.3.32"
 
 # Tower middleware and service utilities.
 tower = { version = "0.5.2", features = ["timeout"] }

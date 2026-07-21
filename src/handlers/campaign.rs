@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::campaign::{CampaignStatusDto, CreateCampaignDto, UpdateCampaignDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -107,6 +108,10 @@ pub async fn create_campaign(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("campaign", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(campaign)))
 }
 
@@ -205,6 +210,10 @@ pub async fn update_campaign(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("campaign", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(campaign))
 }
 
@@ -232,6 +241,10 @@ pub async fn update_campaign_status(
         return Err(AppError::NotFound);
     }
 
+    state
+        .broadcaster
+        .notify("campaign", ChangeAction::Updated, Some(id));
+
     get_campaign(Path(id), State(state)).await
 }
 
@@ -251,6 +264,9 @@ pub async fn delete_campaign(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("campaign", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

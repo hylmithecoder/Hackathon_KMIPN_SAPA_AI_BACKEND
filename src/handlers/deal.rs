@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::deal::{CreateDealDto, DealStageMoveDto, UpdateDealDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -119,6 +120,10 @@ pub async fn create_deal(
         created_at: None,
         updated_at: None,
     };
+
+    state
+        .broadcaster
+        .notify("deal", ChangeAction::Created, Some(last_id));
 
     Ok((StatusCode::CREATED, ApiResponse::success(deal)))
 }
@@ -241,6 +246,10 @@ pub async fn update_deal(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("deal", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(deal))
 }
 
@@ -257,6 +266,9 @@ pub async fn delete_deal(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("deal", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -288,6 +300,10 @@ pub async fn move_deal_stage(
         params! { "id" => id, "stage_id" => payload.stage_id },
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    state
+        .broadcaster
+        .notify("deal", ChangeAction::Updated, Some(id));
 
     get_deal(Path(id), State(state)).await
 }

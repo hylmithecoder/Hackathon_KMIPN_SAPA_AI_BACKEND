@@ -17,6 +17,7 @@
 //! - `models`: request/response DTOs.
 //! - `server`: TCP listener setup and graceful shutdown.
 //! - `whatsapp`: in-process WhatsApp Web session registry.
+//! - `ws`: real-time WebSocket broadcasting for entity changes.
 //! - `utils`: helpers and logging macros.
 
 pub mod config;
@@ -31,3 +32,4 @@ pub mod server;
 pub mod state;
 pub mod utils;
 pub mod whatsapp;
+pub mod ws;

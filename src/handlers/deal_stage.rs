@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::deal_stage::{CreateDealStageDto, ReorderDealStageDto, UpdateDealStageDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -77,6 +78,10 @@ pub async fn create_stage(
         is_active: true,
         created_at: None,
     };
+
+    state
+        .broadcaster
+        .notify("deal_stage", ChangeAction::Created, Some(last_id));
 
     Ok((StatusCode::CREATED, ApiResponse::success(stage)))
 }
@@ -159,6 +164,10 @@ pub async fn update_stage(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("deal_stage", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(stage))
 }
 
@@ -178,6 +187,9 @@ pub async fn delete_stage(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("deal_stage", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -200,6 +212,10 @@ pub async fn reorder_stages(
         )
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     }
+
+    state
+        .broadcaster
+        .notify("deal_stage", ChangeAction::Updated, None);
 
     Ok(ApiResponse::message("Stages reordered"))
 }

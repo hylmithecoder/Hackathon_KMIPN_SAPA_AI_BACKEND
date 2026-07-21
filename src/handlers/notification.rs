@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::notification::CreateNotificationDto;
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -104,6 +105,10 @@ pub async fn create_notification(
         created_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("notification", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(notification)))
 }
 
@@ -139,6 +144,10 @@ pub async fn mark_read(
         return Err(AppError::NotFound);
     }
 
+    state
+        .broadcaster
+        .notify("notification", ChangeAction::Updated, Some(id));
+
     let notification: Option<Notification> = conn
         .exec_first(
             format!("SELECT {NOTIFICATION_COLUMNS} FROM notifications WHERE id = :id"),
@@ -162,6 +171,10 @@ pub async fn mark_all_read(State(state): State<AppState>) -> Result<ApiResponse<
     conn.exec_drop("UPDATE notifications SET is_read = 1 WHERE is_read = 0", ())
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("notification", ChangeAction::Updated, None);
+
     Ok(ApiResponse::message("All notifications marked read"))
 }
 
@@ -181,6 +194,9 @@ pub async fn delete_notification(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("notification", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

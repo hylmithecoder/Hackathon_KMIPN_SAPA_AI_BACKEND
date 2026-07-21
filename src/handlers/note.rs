@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::note::{CreateNoteDto, UpdateNoteDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -91,6 +92,10 @@ pub async fn create_note(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("note", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(note)))
 }
 
@@ -152,6 +157,10 @@ pub async fn update_note(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("note", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(note))
 }
 
@@ -168,6 +177,9 @@ pub async fn delete_note(
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("note", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

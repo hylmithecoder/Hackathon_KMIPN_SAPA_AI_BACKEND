@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::product::{CreateProductDto, UpdateProductDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -115,6 +116,10 @@ pub async fn create_product(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("product", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(product)))
 }
 
@@ -204,6 +209,10 @@ pub async fn update_product(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("product", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(product))
 }
 
@@ -223,6 +232,9 @@ pub async fn delete_product(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("product", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

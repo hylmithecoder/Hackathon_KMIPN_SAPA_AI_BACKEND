@@ -1,6 +1,7 @@
 //! Shared application state.
 
 use crate::whatsapp::WaRegistry;
+use crate::ws::Broadcaster;
 use mysql::Pool;
 
 /// State shared across all requests.
@@ -8,6 +9,7 @@ use mysql::Pool;
 pub struct AppState {
     pub pool: Pool,
     pub wa: WaRegistry,
+    pub broadcaster: Broadcaster,
 }
 
 impl AppState {
@@ -15,6 +17,7 @@ impl AppState {
     pub fn new(pool: Pool) -> Self {
         Self {
             wa: WaRegistry::new(pool.clone()),
+            broadcaster: Broadcaster::new(),
             pool,
         }
     }

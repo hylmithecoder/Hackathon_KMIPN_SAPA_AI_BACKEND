@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::contact::{CreateContactDto, TagContactDto, UpdateContactDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -127,6 +128,10 @@ pub async fn create_contact(
         updated_at: None,
     };
 
+    state
+        .broadcaster
+        .notify("contact", ChangeAction::Created, Some(last_id));
+
     Ok((StatusCode::CREATED, ApiResponse::success(contact)))
 }
 
@@ -233,6 +238,10 @@ pub async fn update_contact(
         apply_tags(&mut conn, id, &tag_ids).map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
     }
 
+    state
+        .broadcaster
+        .notify("contact", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(contact))
 }
 
@@ -252,6 +261,9 @@ pub async fn delete_contact(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("contact", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -300,6 +312,10 @@ pub async fn add_tag_to_contact(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("contact", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::message("Tag added"))
 }
 
@@ -317,6 +333,10 @@ pub async fn remove_tag_from_contact(
         params! { "contact_id" => id, "tag_id" => tag_id },
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    state
+        .broadcaster
+        .notify("contact", ChangeAction::Updated, Some(id));
 
     Ok(StatusCode::NO_CONTENT)
 }

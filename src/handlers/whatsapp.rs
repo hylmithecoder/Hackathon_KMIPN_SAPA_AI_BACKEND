@@ -3,12 +3,31 @@ use crate::error::AppError;
 use crate::models::whatsapp::SendWhatsappDto;
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{Json, extract::State, http::StatusCode};
 use mysql::params;
 use mysql::prelude::*;
 
-type WhatsappSessionRow = (u64, String, Option<String>, String, Option<String>, Option<String>, Option<String>);
-type WhatsappMessageRow = (u64, u64, String, String, Option<String>, String, Option<String>, Option<String>, Option<String>);
+type WhatsappSessionRow = (
+    u64,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+type WhatsappMessageRow = (
+    u64,
+    u64,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 pub async fn get_status(
     State(state): State<AppState>,
@@ -51,7 +70,12 @@ pub async fn wa_qr(State(state): State<AppState>) -> Result<ApiResponse<Option<S
 pub async fn wa_connect(State(state): State<AppState>) -> Result<ApiResponse<()>, AppError> {
     let session = state.wa.foundation();
     match session.connect().await {
-        Ok(_) => Ok(ApiResponse::message("WhatsApp pairing started")),
+        Ok(_) => {
+            state
+                .broadcaster
+                .notify("whatsapp_session", ChangeAction::Updated, None);
+            Ok(ApiResponse::message("WhatsApp pairing started"))
+        }
         Err(e) => Err(AppError::BadRequest(e)),
     }
 }
@@ -102,6 +126,9 @@ pub async fn wa_send(
                 params! { "wa_message_id" => wa_message_id, "id" => log_id },
             )
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+            state
+                .broadcaster
+                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
             Ok(ApiResponse::message("Message sent"))
         }
         Err(e) => {
@@ -117,6 +144,9 @@ pub async fn wa_send(
 
 pub async fn wa_logout(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     state.wa.foundation().logout().await;
+    state
+        .broadcaster
+        .notify("whatsapp_session", ChangeAction::Updated, None);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::company::{CreateCompanyDto, UpdateCompanyDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -97,6 +98,10 @@ pub async fn create_company(
         created_at: None,
         updated_at: None,
     };
+
+    state
+        .broadcaster
+        .notify("company", ChangeAction::Created, Some(last_id));
 
     Ok((StatusCode::CREATED, ApiResponse::success(company)))
 }
@@ -200,6 +205,10 @@ pub async fn update_company(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("company", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(company))
 }
 
@@ -219,6 +228,9 @@ pub async fn delete_company(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("company", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)

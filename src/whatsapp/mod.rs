@@ -154,7 +154,9 @@ impl WaSession {
                             *inner.qr_code.lock().await = None;
 
                             let mut num = inner.number.lock().await.clone();
-                            if num.is_none() && let Some(jid) = client.get_pn() {
+                            if num.is_none()
+                                && let Some(jid) = client.get_pn()
+                            {
                                 let pn = jid.user.to_string();
                                 *inner.number.lock().await = Some(pn.clone());
                                 num = Some(pn);

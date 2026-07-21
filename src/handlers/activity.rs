@@ -3,6 +3,7 @@ use crate::error::AppError;
 use crate::models::activity::{CreateActivityDto, UpdateActivityDto};
 use crate::response::ApiResponse;
 use crate::state::AppState;
+use crate::ws::event::ChangeAction;
 use axum::{
     Json,
     extract::{Path, State},
@@ -118,6 +119,10 @@ pub async fn create_activity(
         created_at: None,
         updated_at: None,
     };
+
+    state
+        .broadcaster
+        .notify("activity", ChangeAction::Created, Some(last_id));
 
     Ok((StatusCode::CREATED, ApiResponse::success(activity)))
 }
@@ -235,6 +240,10 @@ pub async fn update_activity(
     )
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
+    state
+        .broadcaster
+        .notify("activity", ChangeAction::Updated, Some(id));
+
     Ok(ApiResponse::success(activity))
 }
 
@@ -254,6 +263,9 @@ pub async fn delete_activity(
     .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
 
     if conn.affected_rows() > 0 {
+        state
+            .broadcaster
+            .notify("activity", ChangeAction::Deleted, Some(id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -278,6 +290,10 @@ pub async fn mark_activity_done(
     if conn.affected_rows() == 0 {
         return Err(AppError::NotFound);
     }
+
+    state
+        .broadcaster
+        .notify("activity", ChangeAction::Updated, Some(id));
 
     get_activity(Path(id), State(state)).await
 }
