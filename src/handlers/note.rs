@@ -13,7 +13,9 @@ use axum::{
 use mysql::params;
 use mysql::prelude::*;
 
-const NOTE_COLUMNS: &str = "n.id, n.content, n.contact_id, n.deal_id, n.company_id, n.created_by, n.created_at, n.updated_at";
+const NOTE_COLUMNS: &str = "n.id, n.content, n.contact_id, n.deal_id, n.company_id, n.created_by, \
+    DATE_FORMAT(n.created_at, '%Y-%m-%d %H:%i:%s') AS created_at, \
+    DATE_FORMAT(n.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at";
 
 type NoteRow = (
     u64,

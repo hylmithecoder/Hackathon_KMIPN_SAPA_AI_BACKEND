@@ -40,7 +40,9 @@ pub async fn get_status(
 
     let session: Option<WhatsappSession> = conn
         .exec_first(
-            "SELECT id, name, sender_number, wa_status, wa_qr, wa_paired_at, updated_at \
+            "SELECT id, name, sender_number, wa_status, wa_qr, \
+             DATE_FORMAT(wa_paired_at, '%Y-%m-%d %H:%i:%s') AS wa_paired_at, \
+             DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at \
              FROM whatsapp_sessions ORDER BY id LIMIT 1",
             (),
         )
@@ -161,7 +163,9 @@ pub async fn list_messages(
 
     let messages = conn
         .query_map(
-            "SELECT id, session_id, phone, message, wa_message_id, status, error_message, sent_at, created_at \
+            "SELECT id, session_id, phone, message, wa_message_id, status, error_message, \
+             DATE_FORMAT(sent_at, '%Y-%m-%d %H:%i:%s') AS sent_at, \
+             DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at \
              FROM whatsapp_messages ORDER BY id DESC LIMIT 100",
             |(id, session_id, phone, message, wa_message_id, status, error_message, sent_at, created_at): WhatsappMessageRow| WhatsappMessage {
                 id,

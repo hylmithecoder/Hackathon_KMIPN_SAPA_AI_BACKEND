@@ -14,7 +14,7 @@ use mysql::params;
 use mysql::prelude::*;
 use uuid::Uuid;
 
-const USER_COLUMNS: &str = "id, username, full_name, role, email, phone, photo_url, is_active";
+const USER_COLUMNS: &str = "u.id, u.username, u.full_name, u.role, u.email, u.phone, u.photo_url, u.is_active";
 
 type UserRow = (
     u64,
@@ -262,7 +262,7 @@ pub async fn list_users(
 
     let users = conn
         .query_map(
-            format!("SELECT {USER_COLUMNS} FROM users ORDER BY id"),
+            format!("SELECT {USER_COLUMNS} FROM users u ORDER BY u.id"),
             map_user,
         )
         .map_err(map_mysql_err)?;
@@ -282,7 +282,7 @@ pub async fn update_user(
 
     let existing: Option<UserRow> = conn
         .exec_first(
-            format!("SELECT {USER_COLUMNS} FROM users WHERE id = :id"),
+            format!("SELECT {USER_COLUMNS} FROM users u WHERE u.id = :id"),
             params! { "id" => id },
         )
         .map_err(map_mysql_err)?;

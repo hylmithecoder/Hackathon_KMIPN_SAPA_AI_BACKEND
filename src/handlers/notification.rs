@@ -14,7 +14,8 @@ use mysql::params;
 use mysql::prelude::*;
 
 const NOTIFICATION_COLUMNS: &str =
-    "id, user_id, title, body, category, entity_type, entity_id, is_read, created_at";
+    "id, user_id, title, body, category, entity_type, entity_id, is_read, \
+     DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at";
 
 type NotificationRow = (
     u64,

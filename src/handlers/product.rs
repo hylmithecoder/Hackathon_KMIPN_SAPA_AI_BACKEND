@@ -14,7 +14,9 @@ use mysql::params;
 use mysql::prelude::*;
 
 const PRODUCT_COLUMNS: &str =
-    "id, name, sku, description, category, unit_price, currency, is_active, created_at, updated_at";
+    "id, name, sku, description, category, unit_price, currency, is_active, \
+     DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at, \
+     DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at";
 
 type ProductRow = (
     u64,

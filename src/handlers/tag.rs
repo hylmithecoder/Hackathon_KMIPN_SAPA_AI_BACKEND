@@ -13,7 +13,7 @@ use axum::{
 use mysql::params;
 use mysql::prelude::*;
 
-const TAG_COLUMNS: &str = "id, name, color, created_at";
+const TAG_COLUMNS: &str = "id, name, color, DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at";
 
 type TagRow = (u64, String, Option<String>, Option<String>);
 
