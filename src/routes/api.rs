@@ -140,6 +140,16 @@ pub fn router() -> Router<AppState> {
                 .delete(deal::delete_deal),
         )
         .route("/api/v1/deals/{id}/move-stage", put(deal::move_deal_stage))
+        .route("/api/v1/deals/{id}/detail", get(deal::get_deal_detail))
+        .route(
+            "/api/v1/deals/{id}/discussions",
+            get(deal::list_deal_discussions).post(deal::create_deal_discussion),
+        )
+        .route(
+            "/api/v1/deals/{id}/whatsapp-messages",
+            get(whatsapp::list_deal_whatsapp_messages)
+                .post(whatsapp::send_deal_whatsapp_message),
+        )
         // Activities
         .route(
             "/api/v1/activities",

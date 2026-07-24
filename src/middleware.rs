@@ -16,6 +16,30 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Maximum body size in bytes to buffer for access logging (2 MB).
 const MAX_LOG_BODY_SIZE: usize = 2 * 1024 * 1024;
 
+/// ANSI color for the status code based on its class.
+///
+/// * `2xx` → green (`\x1b[32m`)
+/// * `3xx` → cyan (`\x1b[36m`)
+/// * `4xx` / `5xx` → red (`\x1b[31m`)
+fn status_color(code: u16) -> &'static str {
+    match code {
+        200..=299 => "\x1b[32m",
+        300..=399 => "\x1b[36m",
+        _ => "\x1b[31m",
+    }
+}
+
+/// Format a [`Duration`] into a human-readable string (e.g. `3ms`, `1.2s`).
+fn format_duration(d: std::time::Duration) -> String {
+    if d.as_secs() > 0 {
+        format!("{}.{:03}s", d.as_secs(), d.subsec_millis())
+    } else if d.as_micros() >= 1000 {
+        format!("{}ms", d.as_millis())
+    } else {
+        format!("{}µs", d.as_micros())
+    }
+}
+
 /// Attach a unique request id to every incoming request.
 ///
 /// The id is stored as a response header so clients can quote it in support tickets.
@@ -62,14 +86,6 @@ pub async fn access_log(req: Request<Body>, next: Next) -> Response {
         }
     };
 
-    let req_payload_display = if req_bytes.is_empty() {
-        "-".to_string()
-    } else {
-        std::str::from_utf8(&req_bytes)
-            .unwrap_or("[binary data]")
-            .to_string()
-    };
-
     // Reconstruct Request with original body bytes
     let req = Request::from_parts(req_parts, Body::from(req_bytes));
 
@@ -106,26 +122,33 @@ pub async fn access_log(req: Request<Body>, next: Next) -> Response {
     // Reconstruct Response with original body bytes
     let response = Response::from_parts(resp_parts, Body::from(resp_bytes));
 
+    let (method_str, status_code, duration_fmt) = (method.as_str(), status.as_u16(), format_duration(duration));
+    let color = status_color(status_code);
+
     if query_str.is_empty() {
-        crate::log_info!(
-            "{} {} | payload: {} -> {} in {:?} | response: {}",
-            method,
+        println!(
+            "{}[{}] \x1b[0m{} {} -> {}{} \x1b[0min {} | {}",
+            color,
+            crate::utils::debugger::timestamp(),
+            method_str,
             path,
-            req_payload_display,
-            status.as_u16(),
-            duration,
-            resp_payload_display
+            color,
+            status_code,
+            duration_fmt,
+            resp_payload_display,
         );
     } else {
-        crate::log_info!(
-            "{} {}?{} | payload: {} -> {} in {:?} | response: {}",
-            method,
+        println!(
+            "{}[{}] \x1b[0m{} {}?{} -> {}{} \x1b[0min {} | {}",
+            color,
+            crate::utils::debugger::timestamp(),
+            method_str,
             path,
             query_str,
-            req_payload_display,
-            status.as_u16(),
-            duration,
-            resp_payload_display
+            color,
+            status_code,
+            duration_fmt,
+            resp_payload_display,
         );
     }
 

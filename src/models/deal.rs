@@ -3,7 +3,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct CreateDealDto {
     pub title: String,
-    pub contact_id: u64,
+    pub contact_id: Option<u64>,
     pub company_id: Option<u64>,
     pub stage_id: u64,
     pub owner_id: Option<u64>,
@@ -32,4 +32,9 @@ pub struct UpdateDealDto {
 #[derive(Debug, Deserialize)]
 pub struct DealStageMoveDto {
     pub stage_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateDealDiscussionDto {
+    pub content: String,
 }

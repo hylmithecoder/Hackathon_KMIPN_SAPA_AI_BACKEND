@@ -37,8 +37,31 @@ pub fn req_str(row: &mut mysql::Row, name: &str) -> Result<String, AppError> {
 }
 
 /// Shorthand for extracting an optional `String` without panicking on `NULL`.
+///
+/// Also converts MySQL `DATE`/`DATETIME`/`TIMESTAMP` values to strings so the
+/// caller can keep model fields as `Option<String>` without needing `chrono`.
 pub fn opt_str(row: &mut mysql::Row, name: &str) -> Option<String> {
-    take_optional::<String>(row, name)
+    let raw: Option<mysql::Value> = row.take::<Option<mysql::Value>, _>(name)?;
+    raw.map(|v| match v {
+        mysql::Value::NULL => String::new(),
+        mysql::Value::Bytes(b) => String::from_utf8_lossy(&b).to_string(),
+        mysql::Value::Int(i) => i.to_string(),
+        mysql::Value::UInt(u) => u.to_string(),
+        mysql::Value::Float(f) => f.to_string(),
+        mysql::Value::Double(d) => d.to_string(),
+        mysql::Value::Date(year, month, day, 0, 0, 0, _) => {
+            format!("{:04}-{:02}-{:02}", year, month, day)
+        }
+        mysql::Value::Date(year, month, day, hour, minute, second, _) => {
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                year, month, day, hour, minute, second
+            )
+        }
+        mysql::Value::Time(_, days, hours, minutes, seconds, _) => {
+            format!("{} {:02}:{:02}:{:02}", days, hours, minutes, seconds)
+        }
+    })
 }
 
 /// Shorthand for extracting a required `u64`.

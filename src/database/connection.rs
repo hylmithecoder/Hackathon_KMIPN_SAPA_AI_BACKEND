@@ -24,6 +24,45 @@ fn ensure_column(
     Ok(())
 }
 
+/// Idempotently make a column nullable and repoint its foreign key to
+/// `ON DELETE SET NULL`. Used when relaxing a previous `NOT NULL` constraint.
+fn ensure_column_nullable(
+    conn: &mut mysql::PooledConn,
+    table: &str,
+    column: &str,
+    definition: &str,
+    ref_table: &str,
+    ref_column: &str,
+) -> Result<(), mysql::Error> {
+    let nullable: Option<String> = conn.exec_first(
+        "SELECT is_nullable FROM information_schema.columns \
+         WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c",
+        params! { "t" => table, "c" => column },
+    )?;
+
+    if nullable.as_deref() != Some("YES") {
+        // Find existing FK constraint name so we can drop it before modifying the column.
+        let fk_name: Option<String> = conn.exec_first(
+            "SELECT constraint_name FROM information_schema.key_column_usage \
+             WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c \
+             AND referenced_table_name IS NOT NULL",
+            params! { "t" => table, "c" => column },
+        )?;
+        if let Some(name) = fk_name {
+            conn.query_drop(format!(
+                "ALTER TABLE {table} DROP FOREIGN KEY {name}"
+            ))?;
+        }
+        conn.query_drop(format!(
+            "ALTER TABLE {table} MODIFY COLUMN {column} {definition}"
+        ))?;
+        conn.query_drop(format!(
+            "ALTER TABLE {table} ADD FOREIGN KEY ({column}) REFERENCES {ref_table}({ref_column}) ON DELETE SET NULL"
+        ))?;
+    }
+    Ok(())
+}
+
 pub fn init_db() -> Result<Pool, mysql::Error> {
     let url = crate::config::database_url();
     let pool = Pool::new(url)?;
@@ -119,7 +158,7 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
         "CREATE TABLE IF NOT EXISTS deals (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             title VARCHAR(255) NOT NULL,
-            contact_id BIGINT NOT NULL,
+            contact_id BIGINT NULL,
             company_id BIGINT NULL,
             stage_id BIGINT NOT NULL,
             owner_id BIGINT NULL,
@@ -131,14 +170,51 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
             description TEXT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL,
             FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
             FOREIGN KEY (stage_id) REFERENCES deal_stages(id) ON DELETE RESTRICT,
             FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
         )",
     )?;
 
-    // 7. Activities (calls, meetings, tasks, emails)
+    // Relax contact_id on existing deals created before it became optional.
+    ensure_column_nullable(
+        &mut conn,
+        "deals",
+        "contact_id",
+        "BIGINT NULL",
+        "contacts",
+        "id",
+    )?;
+
+    // 7. Deal discussions (timeline/chat for each deal)
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS deal_discussions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            deal_id BIGINT NOT NULL,
+            user_id BIGINT NULL,
+            content TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        )",
+    )?;
+
+    // 7a. Discussion file attachments
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS discussion_files (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            discussion_id BIGINT NOT NULL,
+            file_name VARCHAR(255) NOT NULL,
+            file_path VARCHAR(500) NOT NULL,
+            mime_type VARCHAR(100) NULL,
+            file_size BIGINT NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (discussion_id) REFERENCES deal_discussions(id) ON DELETE CASCADE
+        )",
+    )?;
+
+    // 8. Activities (calls, meetings, tasks, emails)
     conn.query_drop(
         "CREATE TABLE IF NOT EXISTS activities (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -322,15 +398,36 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
         "CREATE TABLE IF NOT EXISTS whatsapp_messages (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             session_id BIGINT NOT NULL,
+            deal_id BIGINT NULL,
+            contact_id BIGINT NULL,
             phone VARCHAR(30) NOT NULL,
+            direction VARCHAR(10) NOT NULL DEFAULT 'outbound', -- 'inbound','outbound'
             message TEXT NOT NULL,
             wa_message_id VARCHAR(255) NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending','sent','delivered','failed'
+            sender_name VARCHAR(150) NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending','sent','delivered','read','failed'
             error_message TEXT NULL,
             sent_at DATETIME NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (session_id) REFERENCES whatsapp_sessions(id) ON DELETE CASCADE
+            FOREIGN KEY (session_id) REFERENCES whatsapp_sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE SET NULL,
+            FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
         )",
+    )?;
+
+    // Migrate existing whatsapp_messages table created before the deal integration.
+    ensure_column(&mut conn, "whatsapp_messages", "deal_id", "BIGINT NULL")?;
+    ensure_column(&mut conn, "whatsapp_messages", "contact_id", "BIGINT NULL")?;
+    ensure_column(
+        &mut conn,
+        "whatsapp_messages",
+        "direction",
+        "VARCHAR(10) NOT NULL DEFAULT 'outbound'",
+    )?;
+    ensure_column(&mut conn, "whatsapp_messages", "sender_name", "VARCHAR(150) NULL")?;
+    // Widen status enum to include 'read'.
+    conn.query_drop(
+        "ALTER TABLE whatsapp_messages MODIFY COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'",
     )?;
 
     // 18. Notifications

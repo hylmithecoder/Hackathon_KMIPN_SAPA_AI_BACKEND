@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use mysql::params;
 use mysql::prelude::*;
 
+use whatsapp_rust::wacore_binary::JidExt;
 use whatsapp_rust::Client;
 use whatsapp_rust::Jid;
 use whatsapp_rust::NodeFilter;
@@ -71,6 +72,85 @@ impl WaInner {
             ) {
                 crate::log_err!("Failed to update WhatsApp session state: {e}");
             }
+        }
+    }
+
+    fn persist_inbound_message(
+        &self,
+        phone: &str,
+        wa_message_id: &str,
+        text: &str,
+        sender_name: &str,
+    ) {
+        if text.trim().is_empty() {
+            return;
+        }
+
+        let Ok(mut conn) = self.pool.get_conn() else {
+            crate::log_err!("WA inbound: failed to get DB connection");
+            return;
+        };
+
+        let session_id: Option<u64> = match conn
+            .query_first("SELECT id FROM whatsapp_sessions ORDER BY id LIMIT 1")
+        {
+            Ok(id) => id,
+            Err(e) => {
+                crate::log_err!("WA inbound: failed to resolve session: {e}");
+                return;
+            }
+        };
+        let Some(session_id) = session_id else {
+            crate::log_err!("WA inbound: no WhatsApp session record");
+            return;
+        };
+
+        // Find contact by phone; strip non-digit characters for matching.
+        let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+        let contact: Option<(u64, Option<u64>)> = match conn.exec_first(
+            "SELECT id, company_id FROM contacts WHERE REPLACE(REPLACE(REPLACE(phone, '+', ''), '-', ''), ' ', '') = :digits OR phone = :phone ORDER BY id LIMIT 1",
+            params! { "digits" => &digits, "phone" => phone },
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                crate::log_err!("WA inbound: failed to lookup contact: {e}");
+                None
+            }
+        };
+
+        let (contact_id, deal_id) = if let Some((cid, _company_id)) = contact {
+            // Pick the most recent deal linked to this contact.
+            let deal: Option<u64> = match conn.exec_first(
+                "SELECT id FROM deals WHERE contact_id = :cid ORDER BY id DESC LIMIT 1",
+                params! { "cid" => cid },
+            ) {
+                Ok(d) => d,
+                Err(e) => {
+                    crate::log_err!("WA inbound: failed to lookup deal: {e}");
+                    None
+                }
+            };
+            (Some(cid), deal)
+        } else {
+            (None, None)
+        };
+
+        if let Err(e) = conn.exec_drop(
+            "INSERT INTO whatsapp_messages (session_id, deal_id, contact_id, phone, direction, message, wa_message_id, sender_name, status, sent_at) \
+             VALUES (:session_id, :deal_id, :contact_id, :phone, 'inbound', :message, :wa_message_id, :sender_name, 'delivered', NOW())",
+            params! {
+                "session_id" => session_id,
+                "deal_id" => deal_id,
+                "contact_id" => contact_id,
+                "phone" => phone,
+                "message" => text,
+                "wa_message_id" => wa_message_id,
+                "sender_name" => sender_name,
+            },
+        ) {
+            crate::log_err!("WA inbound: failed to persist message: {e}");
+        } else {
+            crate::log_info!("WA inbound: stored message from {phone} (deal_id={deal_id:?})");
         }
     }
 }
@@ -195,6 +275,25 @@ impl WaSession {
                         }
                         Event::PairError(e) => {
                             log_err!("WA event: PairError — {e:?}");
+                        }
+                        Event::Messages(batch) => {
+                            for msg in batch.iter() {
+                                if msg.info.source.is_from_me {
+                                    continue;
+                                }
+                                let chat = &msg.info.source.chat;
+                                if chat.is_group() || chat.is_broadcast_list() || chat.is_status_broadcast() || chat.is_bot() {
+                                    continue;
+                                }
+                                let phone = chat.user.clone();
+                                let text = msg.message.conversation.as_deref().unwrap_or("");
+                                if text.is_empty() {
+                                    continue;
+                                }
+                                let wa_message_id = msg.info.id.to_string();
+                                let sender_name = msg.info.push_name.as_str();
+                                inner.persist_inbound_message(&phone, &wa_message_id, text, sender_name);
+                            }
                         }
                         other => {
                             log_info!("WA event: {:?}", other.kind());

@@ -491,6 +491,7 @@ Default admin account seeded on startup:
   "description": "500 seats license deal"
 }
 ```
+- **Notes:** `contact_id` is optional. If the provided contact does not exist, it is silently dropped to `null` so the deal can still be created.
 - **Response (201 Created):**
 ```json
 {
@@ -539,6 +540,108 @@ Default admin account seeded on startup:
 ```json
 {
   "stage_id": 3
+}
+```
+
+### GET `/api/v1/deals/{id}/detail`
+- **Description:** Get deal with full contact and company details.
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 5,
+    "title": "SAPA AI Enterprise License",
+    "contact": {
+      "id": 10,
+      "first_name": "Budi",
+      "last_name": "Santoso",
+      "email": "budi@acme.com",
+      "phone": "+62812345678",
+      "job_title": "CTO",
+      "company_id": 1,
+      "company_name": "Acme Corp",
+      "source": "Website",
+      "status": "Lead",
+      "assigned_to": 1,
+      "description": "Key decision maker"
+    },
+    "company": {
+      "id": 1,
+      "name": "Acme Corp",
+      "industry": "Technology",
+      "website": "https://acme.com",
+      "phone": "+62215551234",
+      "email": "info@acme.com",
+      "address": "Jl. Sudirman No. 12",
+      "city": "Jakarta",
+      "country": "Indonesia",
+      "description": "Enterprise client",
+      "assigned_to": 1
+    },
+    "stage_id": 1,
+    "stage_name": "New",
+    "owner_id": 1,
+    "owner_name": "System Admin",
+    "value": 150000000.0,
+    "currency": "IDR",
+    "expected_close_date": "2026-08-30",
+    "actual_close_date": null,
+    "status": "Open",
+    "description": "500 seats license deal",
+    "created_at": "2026-07-20T10:00:00Z",
+    "updated_at": "2026-07-20T10:00:00Z"
+  }
+}
+```
+
+### GET `/api/v1/deals/{id}/discussions`
+- **Description:** List timeline comments for a deal.
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "deal_id": 5,
+      "user_id": 1,
+      "author_name": "System Admin",
+      "content": "Follow-up call scheduled for tomorrow.",
+      "created_at": "2026-07-20T10:00:00Z"
+    }
+  ]
+}
+```
+
+### POST `/api/v1/deals/{id}/discussions`
+- **Description:** Add a comment to the deal timeline. Supports text and file uploads.
+- **Request Body:** `multipart/form-data`
+  - `content` (string, optional) — discussion text.
+  - `files` (file, optional, multiple) — attachments up to 10 MB each.
+- **Response (201 Created):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "deal_id": 5,
+    "user_id": null,
+    "author_name": null,
+    "content": "Follow-up call scheduled for tomorrow.",
+    "files": [
+      {
+        "id": 1,
+        "discussion_id": 1,
+        "file_name": "proposal.pdf",
+        "file_url": "/uploads/discussions/1/...",
+        "mime_type": "application/pdf",
+        "file_size": 24576,
+        "created_at": "2026-07-20T10:00:00Z"
+      }
+    ],
+    "created_at": "2026-07-20T10:00:00Z"
+  }
 }
 ```
 
@@ -946,6 +1049,46 @@ Default admin account seeded on startup:
 ### GET `/api/v1/whatsapp/messages`
 - **Description:** List recently logged outgoing WhatsApp messages.
 
+### GET `/api/v1/deals/{id}/whatsapp-messages`
+- **Description:** List WhatsApp messages linked to a specific deal. Returns messages where `deal_id` matches or `contact_id` matches the deal's contact.
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "session_id": "abc123",
+      "deal_id": 42,
+      "contact_id": 15,
+      "phone": "6281234567890",
+      "direction": "outgoing",
+      "message": "Halo, ini pesan dari deal #42",
+      "wa_message_id": "3EB0...",
+      "sender_name": null,
+      "status": "sent",
+      "error_message": null,
+      "sent_at": "2026-07-24 10:30:00",
+      "created_at": "2026-07-24 10:30:00"
+    }
+  ]
+}
+```
+
+### POST `/api/v1/deals/{id}/whatsapp-messages`
+- **Description:** Send a WhatsApp message linked to a deal. Stores the message with the deal's contact info.
+- **Request Body:**
+```json
+{
+  "phone": "6281234567890",
+  "message": "Halo, ini pesan dari deal #42"
+}
+```
+- **Response (200 OK):** Returns the created WhatsApp message object.
+- **Errors:**
+  - `404` — Deal not found
+  - `500` — Send failed or internal error
+
 ---
 
 ## 16. Real-Time WebSocket
@@ -975,7 +1118,7 @@ Default admin account seeded on startup:
 }
 ```
 - **Actions:** `created`, `updated`, `deleted`
-- **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `activity`, `note`, `product`, `quote`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
+- **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `deal_discussion`, `activity`, `note`, `product`, `quote`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
 
 ### Example JavaScript client
 ```javascript

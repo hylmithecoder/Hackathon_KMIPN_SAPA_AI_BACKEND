@@ -5,7 +5,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `HH:MM:SS.mmm` wall-clock stamp (good enough for local dev logs).
-fn timestamp() -> String {
+pub fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

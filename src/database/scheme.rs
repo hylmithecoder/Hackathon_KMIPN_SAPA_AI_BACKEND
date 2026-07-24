@@ -64,7 +64,7 @@ pub struct DealStage {
 pub struct Deal {
     pub id: u64,
     pub title: String,
-    pub contact_id: u64,
+    pub contact_id: Option<u64>,
     pub contact_name: Option<String>,
     pub company_id: Option<u64>,
     pub company_name: Option<String>,
@@ -80,6 +80,48 @@ pub struct Deal {
     pub description: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DealDetail {
+    pub id: u64,
+    pub title: String,
+    pub contact: Option<Contact>,
+    pub company: Option<Company>,
+    pub stage_id: u64,
+    pub stage_name: Option<String>,
+    pub owner_id: Option<u64>,
+    pub owner_name: Option<String>,
+    pub value: f64,
+    pub currency: String,
+    pub expected_close_date: Option<String>,
+    pub actual_close_date: Option<String>,
+    pub status: String,
+    pub description: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DiscussionFile {
+    pub id: u64,
+    pub discussion_id: u64,
+    pub file_name: String,
+    pub file_url: String,
+    pub mime_type: Option<String>,
+    pub file_size: u64,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DealDiscussion {
+    pub id: u64,
+    pub deal_id: u64,
+    pub user_id: Option<u64>,
+    pub author_name: Option<String>,
+    pub content: String,
+    pub files: Vec<DiscussionFile>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -238,9 +280,13 @@ pub struct WhatsappSession {
 pub struct WhatsappMessage {
     pub id: u64,
     pub session_id: u64,
+    pub deal_id: Option<u64>,
+    pub contact_id: Option<u64>,
     pub phone: String,
+    pub direction: String,
     pub message: String,
     pub wa_message_id: Option<String>,
+    pub sender_name: Option<String>,
     pub status: String,
     pub error_message: Option<String>,
     pub sent_at: Option<String>,
