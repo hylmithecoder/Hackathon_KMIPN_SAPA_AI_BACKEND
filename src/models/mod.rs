@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod ai;
 pub mod auth;
 pub mod campaign;
 pub mod company;
@@ -8,7 +9,9 @@ pub mod deal_stage;
 pub mod note;
 pub mod notification;
 pub mod product;
+pub mod pricing;
 pub mod quote;
+pub mod quote_template;
 pub mod tag;
 pub mod ticket;
 pub mod whatsapp;

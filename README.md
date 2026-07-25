@@ -25,6 +25,11 @@ nix-shell --run "cargo run"
 
 The server starts on `http://0.0.0.0:5790` by default.
 
+If `make run` reports that port `5790` is already in use, another backend
+instance is already running. Stop that instance with `Ctrl+C` in its original
+terminal before starting the newly built version. Do not run two instances
+against the same WhatsApp session storage.
+
 ## Configuration
 
 Configuration is centralized in `src/config.rs`. Values are read from environment variables or a `.env` file.

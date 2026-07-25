@@ -11,8 +11,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     handlers::{
-        activity, auth, campaign, company, contact, deal, deal_stage, health, note, notification,
-        product, quote, tag, ticket, whatsapp,
+        activity, ai, auth, campaign, company, contact, deal, deal_stage, health, note, notification,
+        pricing, product, quote, quote_template, tag, ticket, upload, whatsapp,
     },
     middleware,
     state::AppState,
@@ -74,6 +74,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/health/ready", get(health::readiness))
         // Real-time WebSocket endpoint
         .route("/api/v1/ws", get(ws::ws_handler))
+        // File Upload
+        .route("/api/v1/upload", post(upload::upload_file))
         // Auth
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/register", post(auth::register))
@@ -187,6 +189,29 @@ pub fn router() -> Router<AppState> {
                 .put(product::update_product)
                 .delete(product::delete_product),
         )
+        // Price books (catalogue pricing and quantity tiers)
+        .route(
+            "/api/v1/price-books",
+            get(pricing::list_price_books).post(pricing::create_price_book),
+        )
+        .route(
+            "/api/v1/price-books/{id}",
+            get(pricing::get_price_book)
+                .put(pricing::update_price_book)
+                .delete(pricing::delete_price_book),
+        )
+        .route(
+            "/api/v1/price-books/{id}/items",
+            get(pricing::list_price_book_items).post(pricing::create_price_book_item),
+        )
+        .route(
+            "/api/v1/price-books/{price_book_id}/items/{item_id}",
+            put(pricing::update_price_book_item).delete(pricing::delete_price_book_item),
+        )
+        .route(
+            "/api/v1/price-books/{price_book_id}/resolve/{product_id}",
+            get(pricing::resolve_price),
+        )
         // Quotes
         .route(
             "/api/v1/quotes",
@@ -203,6 +228,27 @@ pub fn router() -> Router<AppState> {
             put(quote::update_quote_status),
         )
         .route("/api/v1/quotes/{id}/items", get(quote::list_quote_items))
+        // Quote templates
+        .route(
+            "/api/v1/quote-templates",
+            get(quote_template::list_quote_templates).post(quote_template::create_quote_template),
+        )
+        .route(
+            "/api/v1/quote-templates/{id}",
+            get(quote_template::get_quote_template)
+                .put(quote_template::update_quote_template)
+                .delete(quote_template::delete_quote_template),
+        )
+        .route(
+            "/api/v1/quote-templates/{id}/items",
+            get(quote_template::list_quote_template_items),
+        )
+        .route(
+            "/api/v1/quote-templates/{id}/instantiate",
+            post(quote_template::instantiate_quote_template),
+        )
+        // AI drafting is a read-only OpenCode CLI adapter; it does not write quotes.
+        .route("/api/v1/ai/quotes/draft", post(ai::draft_quote))
         // Tickets
         .route(
             "/api/v1/tickets",

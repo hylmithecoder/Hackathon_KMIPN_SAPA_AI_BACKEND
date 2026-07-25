@@ -13,6 +13,10 @@ pub struct Config {
     pub server_host: String,
     pub server_port: u16,
     pub server_base_url: String,
+    pub ai_enabled: bool,
+    pub ai_opencode_command: String,
+    pub ai_opencode_model: Option<String>,
+    pub ai_timeout_secs: u64,
 }
 
 static CFG: OnceLock<Config> = OnceLock::new();
@@ -42,6 +46,16 @@ pub fn bind_address() -> String {
 pub fn server_base_url() -> &'static str {
     &cfg().server_base_url
 }
+
+/// Whether the backend may invoke the locally configured OpenCode CLI.
+/// Disabled by default so a new deployment never executes an AI provider by accident.
+pub fn ai_enabled() -> bool { cfg().ai_enabled }
+
+pub fn ai_opencode_command() -> &'static str { &cfg().ai_opencode_command }
+
+pub fn ai_opencode_model() -> Option<&'static str> { cfg().ai_opencode_model.as_deref() }
+
+pub fn ai_timeout_secs() -> u64 { cfg().ai_timeout_secs }
 
 fn cfg() -> &'static Config {
     CFG.get()
@@ -128,6 +142,22 @@ fn get_u16(env: &HashMap<String, String>, key: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn get_u64(env: &HashMap<String, String>, key: &str, default: u64) -> u64 {
+    lookup(env, key)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+fn get_bool(env: &HashMap<String, String>, key: &str, default: bool) -> bool {
+    lookup(env, key)
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
+}
+
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -165,6 +195,10 @@ pub fn init() {
     });
 
     let server_base_url = get_str(&env, "SERVER_BASE_URL", "http://localhost:5790");
+    let ai_enabled = get_bool(&env, "AI_ENABLED", false);
+    let ai_opencode_command = get_str(&env, "AI_OPENCODE_COMMAND", "opencode");
+    let ai_opencode_model = lookup(&env, "AI_OPENCODE_MODEL").filter(|value| !value.trim().is_empty());
+    let ai_timeout_secs = get_u64(&env, "AI_TIMEOUT_SECS", 45).clamp(5, 120);
 
     let config = Config {
         app_name,
@@ -172,6 +206,10 @@ pub fn init() {
         server_host,
         server_port,
         server_base_url,
+        ai_enabled,
+        ai_opencode_command,
+        ai_opencode_model,
+        ai_timeout_secs,
     };
     let _ = CFG.set(config);
 }
@@ -244,5 +282,14 @@ mod tests {
 
         let bad = HashMap::new();
         assert_eq!(get_u16(&bad, "PORT", 3000), 3000);
+    }
+
+    #[test]
+    fn test_get_bool_parsing() {
+        let mut env = HashMap::new();
+        env.insert("AI_ENABLED".to_string(), "yes".to_string());
+        assert!(get_bool(&env, "AI_ENABLED", false));
+        env.insert("AI_ENABLED".to_string(), "not-a-bool".to_string());
+        assert!(!get_bool(&env, "AI_ENABLED", false));
     }
 }

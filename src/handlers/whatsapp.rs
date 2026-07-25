@@ -61,12 +61,7 @@ pub async fn wa_qr(State(state): State<AppState>) -> Result<ApiResponse<Option<S
 pub async fn wa_connect(State(state): State<AppState>) -> Result<ApiResponse<()>, AppError> {
     let session = state.wa.foundation();
     match session.connect().await {
-        Ok(_) => {
-            state
-                .broadcaster
-                .notify("whatsapp_session", ChangeAction::Updated, None);
-            Ok(ApiResponse::message("WhatsApp pairing started"))
-        }
+        Ok(_) => Ok(ApiResponse::message("WhatsApp pairing started")),
         Err(e) => Err(AppError::BadRequest(e)),
     }
 }
@@ -98,19 +93,31 @@ pub async fn wa_send(
 
     // Insert pending log row
     conn.exec_drop(
-        "INSERT INTO whatsapp_messages (session_id, phone, direction, message, status) \
-         VALUES (:session_id, :phone, 'outbound', :message, 'pending')",
+        "INSERT INTO whatsapp_messages (session_id, phone, direction, message, media_url, status) \
+         VALUES (:session_id, :phone, 'outbound', :message, :media_url, 'pending')",
         params! {
             "session_id" => session_id,
             "phone" => phone,
             "message" => message,
+            "media_url" => &payload.media_url,
         },
     )
     .map_err(map_mysql_err)?;
 
     let log_id = conn.last_insert_id();
 
-    match state.wa.foundation().send_text(phone, message).await {
+    let send_result = match payload.media_url.as_deref() {
+        Some(media_url) => {
+            state
+                .wa
+                .foundation()
+                .send_media(phone, message, media_url, payload.media_filename.as_deref())
+                .await
+        }
+        None => state.wa.foundation().send_text(phone, message).await,
+    };
+
+    match send_result {
         Ok(wa_message_id) => {
             conn.exec_drop(
                 "UPDATE whatsapp_messages SET wa_message_id = :wa_message_id, status = 'sent', sent_at = NOW() WHERE id = :id",
@@ -128,6 +135,9 @@ pub async fn wa_send(
                 params! { "error" => &e, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
+            state
+                .broadcaster
+                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
             Err(AppError::BadRequest(e))
         }
     }
@@ -135,9 +145,6 @@ pub async fn wa_send(
 
 pub async fn wa_logout(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     state.wa.foundation().logout().await;
-    state
-        .broadcaster
-        .notify("whatsapp_session", ChangeAction::Updated, None);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -152,7 +159,7 @@ pub async fn list_messages(
     let messages = conn
         .exec_map(
             "SELECT id, session_id, deal_id, contact_id, phone, direction, message, \
-             wa_message_id, sender_name, status, error_message, \
+             media_url, wa_message_id, sender_name, status, error_message, \
              DATE_FORMAT(sent_at, '%Y-%m-%d %H:%i:%s') AS sent_at, \
              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at \
              FROM whatsapp_messages ORDER BY id DESC LIMIT 100",
@@ -166,6 +173,7 @@ pub async fn list_messages(
                     phone: row.take("phone").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing phone")))?,
                     direction: row.take("direction").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing direction")))?,
                     message: row.take("message").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing message")))?,
+                    media_url: row.take_opt::<String, _>("media_url").transpose().ok().flatten(),
                     wa_message_id: row.take_opt::<String, _>("wa_message_id").transpose().ok().flatten(),
                     sender_name: row.take_opt::<String, _>("sender_name").transpose().ok().flatten(),
                     status: row.take("status").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing status")))?,
@@ -191,24 +199,16 @@ pub async fn list_deal_whatsapp_messages(
         .get_conn()
         .map_err(map_mysql_err)?;
 
-    let deal_exists: Option<u8> = conn
-        .exec_first(
-            "SELECT 1 FROM deals WHERE id = :id",
-            params! { "id" => id },
-        )
-        .map_err(map_mysql_err)?;
-    if deal_exists.is_none() {
-        return Err(AppError::NotFound);
-    }
-
     let messages = conn
         .exec_map(
             "SELECT id, session_id, deal_id, contact_id, phone, direction, message, \
-             wa_message_id, sender_name, status, error_message, \
+             media_url, wa_message_id, sender_name, status, error_message, \
              DATE_FORMAT(sent_at, '%Y-%m-%d %H:%i:%s') AS sent_at, \
              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at \
              FROM whatsapp_messages \
-             WHERE deal_id = :id OR contact_id IN (SELECT contact_id FROM deals WHERE id = :id AND contact_id IS NOT NULL) \
+             WHERE deal_id = :id \
+                OR contact_id IN (SELECT contact_id FROM deals WHERE id = :id AND contact_id IS NOT NULL) \
+                OR phone IN (SELECT c.phone FROM contacts c JOIN deals d ON d.contact_id = c.id WHERE d.id = :id AND c.phone IS NOT NULL) \
              ORDER BY created_at ASC",
             params! { "id" => id },
             |mut row: mysql::Row| -> Result<WhatsappMessage, AppError> {
@@ -220,6 +220,7 @@ pub async fn list_deal_whatsapp_messages(
                     phone: row.take("phone").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing phone")))?,
                     direction: row.take("direction").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing direction")))?,
                     message: row.take("message").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing message")))?,
+                    media_url: row.take_opt::<String, _>("media_url").transpose().ok().flatten(),
                     wa_message_id: row.take_opt::<String, _>("wa_message_id").transpose().ok().flatten(),
                     sender_name: row.take_opt::<String, _>("sender_name").transpose().ok().flatten(),
                     status: row.take("status").ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing status")))?,
@@ -265,26 +266,47 @@ pub async fn send_deal_whatsapp_message(
         )
         .map_err(map_mysql_err)?;
 
-    let (deal_contact_id, contact_id, phone) = deal.ok_or(AppError::NotFound)?;
-    let phone = phone.ok_or_else(|| AppError::BadRequest("Deal has no contact phone".into()))?;
+    let (deal_contact_id, contact_id, c_phone) = deal.ok_or(AppError::NotFound)?;
+    let phone = payload
+        .phone
+        .filter(|p| !p.trim().is_empty())
+        .or(c_phone)
+        .ok_or_else(|| AppError::BadRequest("Deal has no contact phone".into()))?;
     let contact_id = contact_id.or(deal_contact_id);
 
     conn.exec_drop(
-        "INSERT INTO whatsapp_messages (session_id, deal_id, contact_id, phone, direction, message, status) \
-         VALUES (:session_id, :deal_id, :contact_id, :phone, 'outbound', :message, 'pending')",
+        "INSERT INTO whatsapp_messages (session_id, deal_id, contact_id, phone, direction, message, media_url, status) \
+         VALUES (:session_id, :deal_id, :contact_id, :phone, 'outbound', :message, :media_url, 'pending')",
         params! {
             "session_id" => session_id,
             "deal_id" => id,
             "contact_id" => contact_id,
             "phone" => &phone,
             "message" => message,
+            "media_url" => &payload.media_url,
         },
     )
     .map_err(map_mysql_err)?;
 
     let log_id = conn.last_insert_id();
 
-    match state.wa.foundation().send_text(&phone, message).await {
+    let send_result = match payload.media_url.as_deref() {
+        Some(media_url) => {
+            state
+                .wa
+                .foundation()
+                .send_media(
+                    &phone,
+                    message,
+                    media_url,
+                    payload.media_filename.as_deref(),
+                )
+                .await
+        }
+        None => state.wa.foundation().send_text(&phone, message).await,
+    };
+
+    match send_result {
         Ok(wa_message_id) => {
             conn.exec_drop(
                 "UPDATE whatsapp_messages SET wa_message_id = :wa_message_id, status = 'sent', sent_at = NOW() WHERE id = :id",
@@ -302,6 +324,9 @@ pub async fn send_deal_whatsapp_message(
                 params! { "error" => &e, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
+            state
+                .broadcaster
+                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
             Err(AppError::BadRequest(e))
         }
     }

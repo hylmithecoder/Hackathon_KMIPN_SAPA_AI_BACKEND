@@ -34,12 +34,5 @@ async fn main() -> Result<()> {
     };
     log_info!("DB connection success");
 
-    // Restore any previously paired WhatsApp session in the background.
-    let state = api_sapaai::state::AppState::new(pool.clone());
-    let wa = state.wa.clone();
-    tokio::spawn(async move {
-        wa.restore_all().await;
-    });
-
     server::run(pool).await
 }

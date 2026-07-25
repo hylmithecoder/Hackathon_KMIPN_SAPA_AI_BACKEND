@@ -1,8 +1,39 @@
 # SAPA AI CRM API Documentation
 
-Base URL: `http://localhost:3000` or configured server host.
+Contract snapshot: **2026-07-25**
 
-All API responses follow a unified JSON envelope format:
+Source of truth: the current Rust working tree at
+`/home/hylmi/Hylmi/Pemrograman_Berorientasi_Objek/Rust/api_sapaai`.
+
+Base URL: `http://localhost:5790` by default, or the configured
+`SERVER_BASE_URL`. Port `3000` is normally the Next.js frontend and must not be
+used as the backend origin unless a reverse proxy is explicitly configured.
+
+## Breaking-change migration notes
+
+- Configure browser requests with
+  `NEXT_PUBLIC_API_URL=http://localhost:5790`. `NEXT_PUBLIC_WS_URL` is optional;
+  clients can derive `ws://localhost:5790/api/v1/ws` from the API origin.
+- Uploads are now multipart requests. Do not set `Content-Type` manually; the
+  browser must add the multipart boundary.
+- Upload responses contain backend-relative paths such as
+  `/uploads/<uuid>.png`. Resolve them against the API origin before rendering.
+- WhatsApp messages add nullable `media_url`; send requests accept it, and
+  deal-scoped sends also accept an optional phone override.
+- Quotes add nullable `template_id` plus server-computed `subtotal`,
+  `tax_amount`, and `total_amount`.
+- Price books, quote templates, and read-only OpenCode drafting are new
+  resources. Template instantiation creates a quote snapshot.
+- Rust response DTOs use JSON `null` for many optional CRM fields. Consumers
+  must not assume that phone, description, company, owner, dates, or media
+  fields are always strings or IDs.
+- Realtime events now include `price_book` and `quote_template`. Event `id`,
+  `payload`, and `timestamp` may be omitted.
+- WhatsApp lifecycle transitions (`pairing`, `connected`, `disconnected`,
+  `failed`, and logout) emit `whatsapp_session` updates. Persisted inbound,
+  outbound, and failed outbound records emit `whatsapp_message` events.
+
+Most JSON endpoints follow a unified response envelope:
 
 ### Success Envelope
 ```json
@@ -11,6 +42,16 @@ All API responses follow a unified JSON envelope format:
   "data": { ... }
 }
 ```
+
+Message-only success:
+```json
+{
+  "success": true,
+  "message": "Operation completed successfully"
+}
+```
+
+Successful delete/logout operations may instead return `204 No Content`.
 
 ### Error Envelope
 ```json
@@ -24,6 +65,7 @@ All API responses follow a unified JSON envelope format:
 
 ## Table of Contents
 1. [Health Checks](#1-health-checks)
+   - [File Uploads](#file-uploads)
 2. [Authentication & Users](#2-authentication--users)
 3. [Companies](#3-companies)
 4. [Contacts](#4-contacts)
@@ -32,13 +74,16 @@ All API responses follow a unified JSON envelope format:
 7. [Activities](#7-activities)
 8. [Notes](#8-notes)
 9. [Products](#9-products)
-10. [Quotes](#10-quotes)
-11. [Tickets](#11-tickets)
-12. [Campaigns](#12-campaigns)
-13. [Tags](#13-tags)
-14. [Notifications](#14-notifications)
-15. [WhatsApp Integration](#15-whatsapp-integration)
-16. [Real-Time WebSocket](#16-real-time-websocket)
+10. [Price Books](#10-price-books)
+11. [Quotes](#11-quotes)
+12. [Quote Templates](#12-quote-templates)
+13. [OpenCode AI Quote Drafting](#13-opencode-ai-quote-drafting)
+14. [Tickets](#14-tickets)
+15. [Campaigns](#15-campaigns)
+16. [Tags](#16-tags)
+17. [Notifications](#17-notifications)
+18. [WhatsApp Integration](#18-whatsapp-integration)
+19. [Real-Time WebSocket](#19-real-time-websocket)
 
 ---
 
@@ -71,6 +116,34 @@ All API responses follow a unified JSON envelope format:
   }
 }
 ```
+
+---
+
+## File Uploads
+
+### POST `/api/v1/upload`
+
+- **Content-Type:** `multipart/form-data`
+- **Form field:** `file`
+- **Description:** Store the first attached image, document, or sticker under
+  `storage/uploads`. The backend serves stored files from `/uploads/*`.
+- **Current constraints:** The handler does not currently enforce a maximum
+  size, MIME allowlist, or extension allowlist. Deployments should enforce
+  limits at the reverse proxy until backend validation is added.
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "data": {
+    "url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png",
+    "filename": "proposal.png"
+  }
+}
+```
+
+The returned `url` is relative to the backend origin. For example, a frontend
+running on port `3000` renders the sample above from
+`http://localhost:5790/uploads/550e8400-e29b-41d4-a716-446655440000.png`.
 
 ---
 
@@ -142,15 +215,7 @@ Default admin account seeded on startup:
 ### POST `/api/v1/auth/logout`
 - **Description:** Invalidate current user session token.
 - **Headers:** `Authorization: Bearer <token>`
-- **Response (200 OK):**
-```json
-{
-  "success": true,
-  "data": {
-    "message": "Logged out successfully"
-  }
-}
-```
+- **Response:** `204 No Content`
 
 ### GET `/api/v1/users`
 - **Description:** List all users.
@@ -770,7 +835,50 @@ Default admin account seeded on startup:
 
 ---
 
-## 10. Quotes
+## 10. Price Books
+
+Price books add deliberate, quantity-tiered catalogue pricing. Resolving a
+price does not modify a product or an existing quote; applications must copy
+the resolved result into the quote item they create.
+
+### GET `/api/v1/price-books`
+- **Description:** List all price books, with the default book first.
+
+### POST `/api/v1/price-books`
+```json
+{
+  "name": "Indonesia Enterprise 2026",
+  "currency": "IDR",
+  "description": "Commercial pricing for Indonesian enterprise accounts",
+  "is_default": true
+}
+```
+
+### GET, PUT, DELETE `/api/v1/price-books/{id}`
+- **Description:** Read, modify, or remove a price book. Setting `is_default`
+  to `true` clears the previous default book.
+
+### GET, POST `/api/v1/price-books/{id}/items`
+- **Description:** List tiers or add one product price tier.
+```json
+{
+  "product_id": 1,
+  "min_quantity": 10,
+  "unit_price": 225000.0
+}
+```
+
+### PUT, DELETE `/api/v1/price-books/{price_book_id}/items/{item_id}`
+- **Description:** Change or remove a price tier.
+
+### GET `/api/v1/price-books/{price_book_id}/resolve/{product_id}?quantity=10`
+- **Description:** Resolves the highest eligible `min_quantity` tier.
+- **Response data:** `price_book_id`, `product_id`, requested `quantity`,
+  matched `min_quantity`, and `unit_price`.
+
+---
+
+## 11. Quotes
 
 ### GET `/api/v1/quotes`
 - **Description:** List sales quotes.
@@ -798,6 +906,13 @@ Default admin account seeded on startup:
   ]
 }
 ```
+
+- **Response:** The created quote has `template_id: null`, status `draft`, and
+  backend-computed `subtotal`, `tax_amount`, and `total_amount`. Line items are
+  retrieved separately from `GET /api/v1/quotes/{id}/items`.
+- **Calculation:** Each line total is
+  `max(quantity * unit_price - discount, 0)`. Tax is calculated from the
+  resulting subtotal.
 
 ### GET `/api/v1/quotes/{id}`
 
@@ -830,7 +945,93 @@ Default admin account seeded on startup:
 
 ---
 
-## 11. Tickets
+## 12. Quote Templates
+
+Templates are reusable quote blueprints. Instantiation copies every template
+item, price, discount, note, and term into a normal editable quote so later
+template changes never alter a sent quote.
+
+### GET, POST `/api/v1/quote-templates`
+```json
+{
+  "name": "SAPA AI Enterprise Starter",
+  "description": "Baseline enterprise proposal",
+  "currency": "IDR",
+  "tax_rate": 11,
+  "notes": "Pricing valid for 30 days.",
+  "terms": "Annual commitment; implementation starts after acceptance.",
+  "items": [
+    {
+      "product_id": 1,
+      "description": "SAPA AI Pro Monthly (10 seats)",
+      "quantity": 10,
+      "unit_price": 250000,
+      "discount": 0
+    }
+  ]
+}
+```
+
+### GET, PUT, DELETE `/api/v1/quote-templates/{id}`
+- **Description:** Read, update, or delete a template. `PUT` may include a
+  full replacement `items` array.
+
+### GET `/api/v1/quote-templates/{id}/items`
+- **Description:** Retrieve ordered template line items.
+
+### POST `/api/v1/quote-templates/{id}/instantiate`
+- **Description:** Create a draft quote snapshot from an active template.
+  `quote_number` and `issue_date` are optional; the backend generates them
+  when omitted.
+```json
+{
+  "deal_id": 5,
+  "quote_number": "QUO-2026-ENTERPRISE-001",
+  "issue_date": "2026-07-25",
+  "expiry_date": "2026-08-24",
+  "notes": "Prepared for the procurement team."
+}
+```
+
+---
+
+## 13. OpenCode AI Quote Drafting
+
+The AI integration is backend-only and intentionally read-only. It executes
+the server's configured OpenCode CLI in an empty working directory, provides a
+minimal deal/quote/template context, and returns a draft for human review. It
+does not create, edit, send, accept, or reject a quote.
+
+Set these variables through the custom `.env` parser before using it:
+
+```dotenv
+AI_ENABLED=true
+AI_OPENCODE_COMMAND=opencode
+# Optional; must be a configured OpenCode provider/model value.
+AI_OPENCODE_MODEL=provider/model
+AI_TIMEOUT_SECS=45
+```
+
+### POST `/api/v1/ai/quotes/draft`
+```json
+{
+  "deal_id": 5,
+  "quote_id": 12,
+  "template_id": 3,
+  "language": "Indonesian",
+  "instruction": "Write a concise introduction for the procurement lead."
+}
+```
+
+- **Response data:** `provider`, optional `model`, `review_required: true`,
+  and `draft`. The draft normally contains `subject`, `intro`, `notes`,
+  `recommended_next_step`, and `warnings`.
+- **Safety boundary:** Verify prices, legal terms, delivery dates, and customer
+  claims before inserting the returned text into a quote.
+
+---
+
+## 14. Tickets
 
 ### GET `/api/v1/tickets`
 - **Description:** List customer support tickets.
@@ -878,7 +1079,7 @@ Default admin account seeded on startup:
 
 ---
 
-## 12. Campaigns
+## 15. Campaigns
 
 ### GET `/api/v1/campaigns`
 - **Description:** List marketing campaigns.
@@ -928,7 +1129,7 @@ Default admin account seeded on startup:
 
 ---
 
-## 13. Tags
+## 16. Tags
 
 ### GET `/api/v1/tags`
 - **Description:** List available tags for labeling entities.
@@ -957,7 +1158,7 @@ Default admin account seeded on startup:
 
 ---
 
-## 14. Notifications
+## 17. Notifications
 
 ### GET `/api/v1/notifications`
 - **Description:** List user notifications.
@@ -1012,7 +1213,7 @@ Default admin account seeded on startup:
 
 ---
 
-## 15. WhatsApp Integration
+## 18. WhatsApp Integration
 
 ### GET `/api/v1/whatsapp/status`
 - **Description:** Check in-process WhatsApp Web session status.
@@ -1021,8 +1222,13 @@ Default admin account seeded on startup:
 {
   "success": true,
   "data": {
-    "status": "CONNECTED",
-    "phone": "6281234567890"
+    "id": 1,
+    "name": "default",
+    "sender_number": "6281234567890",
+    "wa_status": "connected",
+    "wa_qr": null,
+    "wa_paired_at": "2026-07-25 08:30:00",
+    "updated_at": "2026-07-25 08:30:00"
   }
 }
 ```
@@ -1034,14 +1240,18 @@ Default admin account seeded on startup:
 - **Description:** Trigger background WhatsApp session connect/re-connect.
 
 ### POST `/api/v1/whatsapp/send`
-- **Description:** Send single text message to phone number.
+- **Description:** Send one text message and record an optional media URL.
 - **Request Body:**
 ```json
 {
   "phone": "6281234567890",
-  "message": "Halo, ini pesan otomatis dari SAPA AI!"
+  "message": "Halo, ini pesan otomatis dari SAPA AI!",
+  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png"
 }
 ```
+- **Important:** In the current backend implementation, `media_url` is stored
+  with the message log but the WhatsApp engine still calls its text-send
+  operation. The referenced file is not transmitted as WhatsApp media yet.
 
 ### POST `/api/v1/whatsapp/logout`
 - **Description:** Disconnect and delete local SQLite session data.
@@ -1058,12 +1268,13 @@ Default admin account seeded on startup:
   "data": [
     {
       "id": 1,
-      "session_id": "abc123",
+      "session_id": 1,
       "deal_id": 42,
       "contact_id": 15,
       "phone": "6281234567890",
-      "direction": "outgoing",
+      "direction": "outbound",
       "message": "Halo, ini pesan dari deal #42",
+      "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png",
       "wa_message_id": "3EB0...",
       "sender_name": null,
       "status": "sent",
@@ -1076,22 +1287,38 @@ Default admin account seeded on startup:
 ```
 
 ### POST `/api/v1/deals/{id}/whatsapp-messages`
-- **Description:** Send a WhatsApp message linked to a deal. Stores the message with the deal's contact info.
+- **Description:** Send a text message linked to a deal. `phone` is optional
+  and overrides the deal contact's phone when supplied. `media_url` is
+  optional and is stored in the message log.
+- **Recipient resolution:** Deal contacts discovered from inbound WhatsApp
+  traffic may contain either a public phone number (PN) or a WhatsApp linked
+  identifier (LID). The backend resolves both through the persisted PN/LID
+  mapping and may retry through the mapped alternate address.
 - **Request Body:**
 ```json
 {
   "phone": "6281234567890",
-  "message": "Halo, ini pesan dari deal #42"
+  "message": "Halo, ini pesan dari deal #42",
+  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png"
 }
 ```
-- **Response (200 OK):** Returns the created WhatsApp message object.
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Message sent"
+}
+```
 - **Errors:**
   - `404` — Deal not found
-  - `500` — Send failed or internal error
+  - `400` — Missing message/contact phone or WhatsApp send/rejection failure.
+    The failed attempt remains available from the message list with
+    `status: "failed"` and an `error_message`.
+  - `500` — Internal database/service error
 
 ---
 
-## 16. Real-Time WebSocket
+## 19. Real-Time WebSocket
 
 ### `WS /api/v1/ws`
 
@@ -1118,7 +1345,17 @@ Default admin account seeded on startup:
 }
 ```
 - **Actions:** `created`, `updated`, `deleted`
-- **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `deal_discussion`, `activity`, `note`, `product`, `quote`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
+- **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `deal_discussion`, `activity`, `note`, `product`, `price_book`, `quote`, `quote_template`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
+- **Optional fields:** `id`, `payload`, and `timestamp` are omitted when the
+  broadcaster does not supply them (for example, some session-wide changes).
+- **WhatsApp semantics:** `whatsapp_session` is emitted for asynchronous
+  pairing, connection, disconnection, failure, and logout state transitions.
+  `whatsapp_message` is emitted after an inbound, outbound, or failed outbound
+  message record has been persisted. Consumers should then refetch the relevant
+  list/detail endpoint; an event is an invalidation signal, not a full record.
+- **Recovery:** WebSocket delivery is transient and has no replay cursor. After
+  reconnecting or resuming a suspended browser tab, refetch every actively
+  subscribed resource once before continuing with live events.
 
 ### Example JavaScript client
 ```javascript

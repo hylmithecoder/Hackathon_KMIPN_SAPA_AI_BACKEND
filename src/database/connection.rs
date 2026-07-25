@@ -273,11 +273,72 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
         )",
     )?;
 
+    // 9a. Price books and quantity-based catalogue prices. Quotes always copy
+    // a resolved price into quote_items, preserving their historical totals.
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS price_books (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            currency VARCHAR(3) NOT NULL DEFAULT 'IDR',
+            description TEXT NULL,
+            is_default TINYINT(1) NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )",
+    )?;
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS price_book_items (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            price_book_id BIGINT NOT NULL,
+            product_id BIGINT NOT NULL,
+            min_quantity DECIMAL(18,4) NOT NULL DEFAULT 1.0000,
+            unit_price DECIMAL(18,2) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_price_book_tier (price_book_id, product_id, min_quantity),
+            FOREIGN KEY (price_book_id) REFERENCES price_books(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )",
+    )?;
+
+    // 9b. Reusable quote templates. Template items are copied to the quote so
+    // later template edits never mutate a previously issued document.
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS quote_templates (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            description TEXT NULL,
+            currency VARCHAR(3) NOT NULL DEFAULT 'IDR',
+            tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+            notes TEXT NULL,
+            terms TEXT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )",
+    )?;
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS quote_template_items (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            template_id BIGINT NOT NULL,
+            product_id BIGINT NULL,
+            description VARCHAR(255) NOT NULL,
+            quantity DECIMAL(18,4) NOT NULL DEFAULT 1.0000,
+            unit_price DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+            discount DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+            position INT UNSIGNED NOT NULL DEFAULT 0,
+            FOREIGN KEY (template_id) REFERENCES quote_templates(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+        )",
+    )?;
+
     // 10. Quotes (proposals)
     conn.query_drop(
         "CREATE TABLE IF NOT EXISTS quotes (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             deal_id BIGINT NOT NULL,
+            template_id BIGINT NULL,
             quote_number VARCHAR(100) UNIQUE NOT NULL,
             issue_date DATE NOT NULL,
             expiry_date DATE NULL,
@@ -292,6 +353,7 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE,
+            FOREIGN KEY (template_id) REFERENCES quote_templates(id) ON DELETE SET NULL,
             FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
         )",
     )?;
@@ -425,6 +487,8 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
         "VARCHAR(10) NOT NULL DEFAULT 'outbound'",
     )?;
     ensure_column(&mut conn, "whatsapp_messages", "sender_name", "VARCHAR(150) NULL")?;
+    ensure_column(&mut conn, "whatsapp_messages", "media_url", "VARCHAR(500) NULL")?;
+
     // Widen status enum to include 'read'.
     conn.query_drop(
         "ALTER TABLE whatsapp_messages MODIFY COLUMN status VARCHAR(20) NOT NULL DEFAULT 'pending'",
@@ -521,6 +585,7 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
         "VARCHAR(30) NULL DEFAULT 'email'",
     )?;
     ensure_column(&mut conn, "campaigns", "message_template", "TEXT NULL")?;
+    ensure_column(&mut conn, "quotes", "template_id", "BIGINT NULL")?;
 
     Ok(pool)
 }

@@ -13,7 +13,7 @@ use axum::{
 use mysql::params;
 use mysql::prelude::*;
 
-const QUOTE_COLUMNS: &str = "q.id, q.deal_id, q.quote_number, q.issue_date, q.expiry_date, \
+const QUOTE_COLUMNS: &str = "q.id, q.deal_id, q.template_id, q.quote_number, q.issue_date, q.expiry_date, \
     q.subtotal, q.tax_rate, q.tax_amount, q.total_amount, q.currency, q.status, q.notes, q.created_by, q.created_at, q.updated_at";
 
 const QUOTE_ITEM_COLUMNS: &str =
@@ -23,6 +23,7 @@ fn row_to_quote(row: &mut mysql::Row) -> Result<Quote, AppError> {
     Ok(Quote {
         id: req_u64(row, "id")?,
         deal_id: req_u64(row, "deal_id")?,
+        template_id: opt_u64(row, "template_id"),
         quote_number: req_str(row, "quote_number")?,
         issue_date: req_str(row, "issue_date")?,
         expiry_date: opt_str(row, "expiry_date"),
@@ -156,6 +157,7 @@ pub async fn create_quote(
     let quote = Quote {
         id: quote_id,
         deal_id: payload.deal_id,
+        template_id: None,
         quote_number: payload.quote_number,
         issue_date: payload.issue_date,
         expiry_date: payload.expiry_date,

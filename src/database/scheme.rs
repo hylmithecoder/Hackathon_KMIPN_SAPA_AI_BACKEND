@@ -176,6 +176,7 @@ pub struct Product {
 pub struct Quote {
     pub id: u64,
     pub deal_id: u64,
+    pub template_id: Option<u64>,
     pub quote_number: String,
     pub issue_date: String,
     pub expiry_date: Option<String>,
@@ -189,6 +190,55 @@ pub struct Quote {
     pub created_by: Option<u64>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PriceBook {
+    pub id: u64,
+    pub name: String,
+    pub currency: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub is_active: bool,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PriceBookItem {
+    pub id: u64,
+    pub price_book_id: u64,
+    pub product_id: u64,
+    pub min_quantity: f64,
+    pub unit_price: f64,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QuoteTemplate {
+    pub id: u64,
+    pub name: String,
+    pub description: Option<String>,
+    pub currency: String,
+    pub tax_rate: f64,
+    pub notes: Option<String>,
+    pub terms: Option<String>,
+    pub is_active: bool,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QuoteTemplateItem {
+    pub id: u64,
+    pub template_id: u64,
+    pub product_id: Option<u64>,
+    pub description: String,
+    pub quantity: f64,
+    pub unit_price: f64,
+    pub discount: f64,
+    pub position: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -285,6 +335,7 @@ pub struct WhatsappMessage {
     pub phone: String,
     pub direction: String,
     pub message: String,
+    pub media_url: Option<String>,
     pub wa_message_id: Option<String>,
     pub sender_name: Option<String>,
     pub status: String,

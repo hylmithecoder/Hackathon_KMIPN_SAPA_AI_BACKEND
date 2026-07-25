@@ -15,9 +15,10 @@ pub struct AppState {
 impl AppState {
     /// Create the initial state from a database pool.
     pub fn new(pool: Pool) -> Self {
+        let broadcaster = Broadcaster::new();
         Self {
-            wa: WaRegistry::new(pool.clone()),
-            broadcaster: Broadcaster::new(),
+            wa: WaRegistry::new(pool.clone(), broadcaster.clone()),
+            broadcaster,
             pool,
         }
     }
