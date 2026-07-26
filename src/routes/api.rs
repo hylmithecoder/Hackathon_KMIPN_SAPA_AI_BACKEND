@@ -2,6 +2,7 @@
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     response::IntoResponse,
     routing::{get, post, put},
 };
@@ -75,7 +76,10 @@ pub fn router() -> Router<AppState> {
         // Real-time WebSocket endpoint
         .route("/api/v1/ws", get(ws::ws_handler))
         // File Upload
-        .route("/api/v1/upload", post(upload::upload_file))
+        .route(
+            "/api/v1/upload",
+            post(upload::upload_file).layer(DefaultBodyLimit::max(upload::MAX_UPLOAD_REQUEST_SIZE)),
+        )
         // Auth
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/register", post(auth::register))
@@ -247,8 +251,10 @@ pub fn router() -> Router<AppState> {
             "/api/v1/quote-templates/{id}/instantiate",
             post(quote_template::instantiate_quote_template),
         )
-        // AI drafting is a read-only OpenCode CLI adapter; it does not write quotes.
+        // AI drafting is a read-only OpenCode CLI adapter; it does not write CRM records.
         .route("/api/v1/ai/quotes/draft", post(ai::draft_quote))
+        .route("/api/v1/ai/notes/draft", post(ai::draft_note))
+        .route("/api/v1/ai/deals/summary", post(ai::summarize_deal))
         // Tickets
         .route(
             "/api/v1/tickets",

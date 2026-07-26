@@ -25,6 +25,10 @@ nix-shell --run "cargo run"
 
 The server starts on `http://0.0.0.0:5790` by default.
 
+Run all Make targets from `nix-shell`. The Makefile intentionally uses the
+Cargo and rustc supplied by `shell.nix`; overriding `RUSTC` with a rustup
+toolchain can create stale Nix linker references after garbage collection.
+
 If `make run` reports that port `5790` is already in use, another backend
 instance is already running. Stop that instance with `Ctrl+C` in its original
 terminal before starting the newly built version. Do not run two instances

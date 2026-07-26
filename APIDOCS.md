@@ -18,8 +18,10 @@ used as the backend origin unless a reverse proxy is explicitly configured.
   browser must add the multipart boundary.
 - Upload responses contain backend-relative paths such as
   `/uploads/<uuid>.png`. Resolve them against the API origin before rendering.
-- WhatsApp messages add nullable `media_url`; send requests accept it, and
-  deal-scoped sends also accept an optional phone override.
+- WhatsApp messages add nullable `media_url`; send requests accept it and
+  upload referenced local files to WhatsApp's encrypted CDN as native image,
+  video, or document messages. Deal-scoped sends also accept an optional phone
+  override.
 - Quotes add nullable `template_id` plus server-computed `subtotal`,
   `tax_amount`, and `total_amount`.
 - Price books, quote templates, and read-only OpenCode drafting are new
@@ -127,9 +129,10 @@ Successful delete/logout operations may instead return `204 No Content`.
 - **Form field:** `file`
 - **Description:** Store the first attached image, document, or sticker under
   `storage/uploads`. The backend serves stored files from `/uploads/*`.
-- **Current constraints:** The handler does not currently enforce a maximum
-  size, MIME allowlist, or extension allowlist. Deployments should enforce
-  limits at the reverse proxy until backend validation is added.
+- **Current constraints:** One file per request, with a maximum file size of
+  10 MiB. Oversized uploads return a structured JSON `413 Payload Too Large`
+  response. The handler does not currently enforce a MIME or extension
+  allowlist.
 - **Response (200 OK):**
 ```json
 {
@@ -773,13 +776,16 @@ Default admin account seeded on startup:
 - **Description:** List internal CRM notes.
 
 ### POST `/api/v1/notes`
+- `contact_id`, `deal_id`, and `company_id` are optional. Omit them or send
+  `null` for an unlinked internal note. When supplied, each ID must refer to an
+  existing CRM record.
 - **Request Body:**
 ```json
 {
   "content": "Client requested custom SLA addendum for WhatsApp gateway.",
-  "contact_id": 10,
-  "deal_id": 5,
-  "company_id": 1
+  "contact_id": null,
+  "deal_id": null,
+  "company_id": null
 }
 ```
 
@@ -800,9 +806,13 @@ Default admin account seeded on startup:
 ## 9. Products
 
 ### GET `/api/v1/products`
-- **Description:** List catalog products and services.
+- **Description:** List catalog products and services. Every product includes
+  a `files` array. The legacy `file_url` and `file_name` fields mirror the
+  first attachment for backward compatibility.
 
 ### POST `/api/v1/products`
+- Upload each file first with `POST /api/v1/upload`, then copy every returned
+  `url` and `filename` into `files`. A product supports up to 20 files.
 - **Request Body:**
 ```json
 {
@@ -811,7 +821,17 @@ Default admin account seeded on startup:
   "description": "Monthly subscription per user",
   "category": "Software",
   "unit_price": 250000.0,
-  "currency": "IDR"
+  "currency": "IDR",
+  "files": [
+    {
+      "file_url": "/uploads/5e7f-example.pdf",
+      "file_name": "product-specification.pdf"
+    },
+    {
+      "file_url": "/uploads/9ab2-product.jpg",
+      "file_name": "product-photo.jpg"
+    }
+  ]
 }
 ```
 
@@ -827,9 +847,20 @@ Default admin account seeded on startup:
   "category": "Software",
   "unit_price": 300000.0,
   "currency": "IDR",
+  "files": [
+    {
+      "file_url": "/uploads/5e7f-example.pdf",
+      "file_name": "product-specification.pdf"
+    }
+  ],
   "is_active": true
 }
 ```
+- When `files` is supplied on update, it atomically replaces the product's
+  attachment list. Send `files: []` to remove all attachment references.
+  Omitting `files` preserves the current list. This does not delete physical
+  uploaded files.
+- `file_url` and `file_name` remain accepted for legacy single-file clients.
 
 ### DELETE `/api/v1/products/{id}`
 
@@ -917,6 +948,9 @@ the resolved result into the quote item they create.
 ### GET `/api/v1/quotes/{id}`
 
 ### PUT `/api/v1/quotes/{id}`
+- **Description:** Update quote metadata and, when `items` is supplied, replace
+  all existing line items atomically. Omitting `items` preserves existing line
+  items. Sending `null` for `expiry_date` or `notes` clears that field.
 - **Request Body:**
 ```json
 {
@@ -925,10 +959,22 @@ the resolved result into the quote item they create.
   "expiry_date": "2026-08-31",
   "tax_rate": 11.0,
   "currency": "IDR",
-  "status": "Sent",
-  "notes": "Revised expiry date."
+  "status": "sent",
+  "notes": "Revised expiry date.",
+  "items": [
+    {
+      "product_id": 1,
+      "description": "SAPA AI Pro Monthly (15 seats)",
+      "quantity": 15.0,
+      "unit_price": 250000.0,
+      "discount": 100000.0
+    }
+  ]
 }
 ```
+- **Recalculation:** Supplying `items` recalculates `subtotal`, `tax_amount`,
+  and `total_amount`. Changing only `tax_rate` recalculates tax and total from
+  the stored subtotal.
 
 ### DELETE `/api/v1/quotes/{id}`
 
@@ -995,12 +1041,12 @@ template changes never alter a sent quote.
 
 ---
 
-## 13. OpenCode AI Quote Drafting
+## 13. OpenCode AI Drafting
 
 The AI integration is backend-only and intentionally read-only. It executes
 the server's configured OpenCode CLI in an empty working directory, provides a
-minimal deal/quote/template context, and returns a draft for human review. It
-does not create, edit, send, accept, or reject a quote.
+minimal context relevant to the requested quote or Note draft, and returns text
+for human review. It does not create, edit, send, accept, or reject CRM records.
 
 Set these variables through the custom `.env` parser before using it:
 
@@ -1028,6 +1074,49 @@ AI_TIMEOUT_SECS=45
   `recommended_next_step`, and `warnings`.
 - **Safety boundary:** Verify prices, legal terms, delivery dates, and customer
   claims before inserting the returned text into a quote.
+
+### POST `/api/v1/ai/notes/draft`
+
+Creates a read-only internal Note draft. Every CRM relation is optional, but a
+supplied ID must exist. `existing_content` is also optional and is limited to
+10,000 characters.
+
+```json
+{
+  "instruction": "Rapikan dan tambahkan tindak lanjut yang jelas.",
+  "existing_content": "Klien minta demo minggu depan.",
+  "contact_id": 4,
+  "deal_id": 3,
+  "company_id": null,
+  "language": "Indonesian"
+}
+```
+
+- **Response data:** `provider`, optional `model`, `review_required: true`, and
+  `draft`. The draft normally contains `content`, `summary`, `suggested_tags`,
+  and `warnings`.
+
+### POST `/api/v1/ai/deals/summary`
+
+- **Description:** Generate a review-only summary of what happened in one deal.
+  The backend supplies the deal/contact context, up to 100 recent WhatsApp
+  messages, 50 activities, 50 notes, and 20 quotes to OpenCode. The browser
+  does not send or execute an arbitrary OpenCode command.
+- **Request:**
+```json
+{
+  "deal_id": 7,
+  "language": "Indonesian",
+  "instruction": "Summarize customer needs, completed actions, and next steps."
+}
+```
+- **Response:** Standard success envelope containing `provider`, optional
+  `model`, `review_required: true`, and a `draft` with `summary`,
+  `customer_needs`, `actions_completed`, `open_questions`,
+  `recommended_next_steps`, `sentiment`, and `warnings`.
+- **Safety boundary:** The endpoint never creates or updates a Note. The user
+  must review the returned `draft.content` and explicitly submit it through
+  `POST /api/v1/notes`.
 
 ---
 
@@ -1240,18 +1329,22 @@ AI_TIMEOUT_SECS=45
 - **Description:** Trigger background WhatsApp session connect/re-connect.
 
 ### POST `/api/v1/whatsapp/send`
-- **Description:** Send one text message and record an optional media URL.
+- **Description:** Send one text or native media message. When `media_url` is
+  present, the stored upload is encrypted, uploaded to WhatsApp's CDN, and sent
+  as an image, video, or document with `message` as its caption.
 - **Request Body:**
 ```json
 {
   "phone": "6281234567890",
   "message": "Halo, ini pesan otomatis dari SAPA AI!",
-  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png"
+  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png",
+  "media_filename": "proposal.png"
 }
 ```
-- **Important:** In the current backend implementation, `media_url` is stored
-  with the message log but the WhatsApp engine still calls its text-send
-  operation. The referenced file is not transmitted as WhatsApp media yet.
+- **Media constraints:** `media_url` must be a direct `/uploads/<file>` path;
+  traversal and external URLs are rejected. Outbound media is limited to 64
+  MiB. JPG, JPEG, PNG, GIF, and WEBP are sent as images; MP4 and MOV as videos;
+  PDF, DOC, DOCX, and unknown extensions as documents.
 
 ### POST `/api/v1/whatsapp/logout`
 - **Description:** Disconnect and delete local SQLite session data.
@@ -1287,9 +1380,10 @@ AI_TIMEOUT_SECS=45
 ```
 
 ### POST `/api/v1/deals/{id}/whatsapp-messages`
-- **Description:** Send a text message linked to a deal. `phone` is optional
-  and overrides the deal contact's phone when supplied. `media_url` is
-  optional and is stored in the message log.
+- **Description:** Send a text or native media message linked to a deal.
+  `phone` optionally overrides the deal contact's phone. When `media_url` is
+  supplied, the backend sends the uploaded file through WhatsApp's encrypted
+  media CDN and stores the same local URL in the message log.
 - **Recipient resolution:** Deal contacts discovered from inbound WhatsApp
   traffic may contain either a public phone number (PN) or a WhatsApp linked
   identifier (LID). The backend resolves both through the persisted PN/LID
@@ -1299,7 +1393,8 @@ AI_TIMEOUT_SECS=45
 {
   "phone": "6281234567890",
   "message": "Halo, ini pesan dari deal #42",
-  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png"
+  "media_url": "/uploads/550e8400-e29b-41d4-a716-446655440000.png",
+  "media_filename": "proposal.png"
 }
 ```
 - **Response (200 OK):**
@@ -1338,9 +1433,21 @@ AI_TIMEOUT_SECS=45
 ```json
 {
   "event": "change",
-  "entity": "company",
+  "entity": "product",
   "action": "updated",
   "id": 5,
+  "payload": {
+    "id": 5,
+    "name": "Enterprise Support",
+    "sku": "SUP-ENT",
+    "description": "Priority support plan",
+    "category": "Support",
+    "unit_price": 2500000,
+    "currency": "IDR",
+    "is_active": true,
+    "created_at": "2026-07-25 10:00:00",
+    "updated_at": "2026-07-25 12:34:56"
+  },
   "timestamp": "2026-07-20T12:34:56Z"
 }
 ```
@@ -1348,14 +1455,29 @@ AI_TIMEOUT_SECS=45
 - **Entities:** `user`, `company`, `contact`, `deal_stage`, `deal`, `deal_discussion`, `activity`, `note`, `product`, `price_book`, `quote`, `quote_template`, `ticket`, `campaign`, `tag`, `notification`, `whatsapp_session`, `whatsapp_message`
 - **Optional fields:** `id`, `payload`, and `timestamp` are omitted when the
   broadcaster does not supply them (for example, some session-wide changes).
+- **Full-record commercial events:** `product`, `quote`, and `quote_template`
+  `created`/`updated` events include the complete current record in `payload`.
+  Top-level `price_book` create/update events do the same. Consumers should
+  upsert `payload` into local state and remove the record by `id` on `deleted`;
+  do not call the matching GET endpoint for every WebSocket event.
+- **Initial read:** List/detail GET endpoints remain the source of the initial
+  snapshot. Call them once when opening a workspace. HTTP POST/PUT/PATCH/DELETE
+  remain the mutation transport; use their returned record for the initiating
+  client's immediate state update, while WebSocket propagates the same change
+  to every other connected client.
 - **WhatsApp semantics:** `whatsapp_session` is emitted for asynchronous
   pairing, connection, disconnection, failure, and logout state transitions.
   `whatsapp_message` is emitted after an inbound, outbound, or failed outbound
   message record has been persisted. Consumers should then refetch the relevant
   list/detail endpoint; an event is an invalidation signal, not a full record.
-- **Recovery:** WebSocket delivery is transient and has no replay cursor. After
-  reconnecting or resuming a suspended browser tab, refetch every actively
-  subscribed resource once before continuing with live events.
+- **WhatsApp media:** New inbound image and sticker messages are downloaded and
+  decrypted by the backend, saved under `/uploads`, persisted in `media_url`,
+  and emitted as a full `whatsapp_message` payload. Sticker sending is not
+  exposed by the CRM web composer; the web client only renders received
+  stickers.
+- **Recovery:** WebSocket delivery is transient and has no replay cursor.
+  Explicit refresh or a single resync after a detected connection gap is
+  allowed as recovery, but GET polling/refetch-on-every-event is not.
 
 ### Example JavaScript client
 ```javascript
@@ -1367,6 +1489,6 @@ const ws = new WebSocket(
 ws.onmessage = (event) => {
   const change = JSON.parse(event.data);
   console.log('Real-time change:', change);
-  // Refresh relevant list or detail view
+  // Upsert change.payload, or remove change.id when action === 'deleted'.
 };
 ```

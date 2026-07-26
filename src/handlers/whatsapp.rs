@@ -121,12 +121,31 @@ pub async fn wa_send(
         Ok(wa_message_id) => {
             conn.exec_drop(
                 "UPDATE whatsapp_messages SET wa_message_id = :wa_message_id, status = 'sent', sent_at = NOW() WHERE id = :id",
-                params! { "wa_message_id" => wa_message_id, "id" => log_id },
+                params! { "wa_message_id" => &wa_message_id, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
-            state
-                .broadcaster
-                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
+            let event_payload = serde_json::json!({
+                "id": log_id,
+                "session_id": session_id,
+                "deal_id": null,
+                "contact_id": null,
+                "phone": phone,
+                "direction": "outbound",
+                "message": message,
+                "media_url": &payload.media_url,
+                "wa_message_id": wa_message_id,
+                "sender_name": "Salesbot",
+                "status": "sent",
+                "error_message": null,
+                "sent_at": chrono::Utc::now().to_rfc3339(),
+                "created_at": null
+            });
+            state.broadcaster.notify_with_payload(
+                "whatsapp_message",
+                ChangeAction::Created,
+                Some(log_id),
+                &event_payload,
+            );
             Ok(ApiResponse::message("Message sent"))
         }
         Err(e) => {
@@ -135,9 +154,28 @@ pub async fn wa_send(
                 params! { "error" => &e, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
-            state
-                .broadcaster
-                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
+            let event_payload = serde_json::json!({
+                "id": log_id,
+                "session_id": session_id,
+                "deal_id": null,
+                "contact_id": null,
+                "phone": phone,
+                "direction": "outbound",
+                "message": message,
+                "media_url": &payload.media_url,
+                "wa_message_id": null,
+                "sender_name": "Salesbot",
+                "status": "failed",
+                "error_message": &e,
+                "sent_at": null,
+                "created_at": null
+            });
+            state.broadcaster.notify_with_payload(
+                "whatsapp_message",
+                ChangeAction::Created,
+                Some(log_id),
+                &event_payload,
+            );
             Err(AppError::BadRequest(e))
         }
     }
@@ -310,12 +348,31 @@ pub async fn send_deal_whatsapp_message(
         Ok(wa_message_id) => {
             conn.exec_drop(
                 "UPDATE whatsapp_messages SET wa_message_id = :wa_message_id, status = 'sent', sent_at = NOW() WHERE id = :id",
-                params! { "wa_message_id" => wa_message_id, "id" => log_id },
+                params! { "wa_message_id" => &wa_message_id, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
-            state
-                .broadcaster
-                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
+            let event_payload = serde_json::json!({
+                "id": log_id,
+                "session_id": session_id,
+                "deal_id": id,
+                "contact_id": contact_id,
+                "phone": &phone,
+                "direction": "outbound",
+                "message": message,
+                "media_url": &payload.media_url,
+                "wa_message_id": wa_message_id,
+                "sender_name": "Salesbot",
+                "status": "sent",
+                "error_message": null,
+                "sent_at": chrono::Utc::now().to_rfc3339(),
+                "created_at": null
+            });
+            state.broadcaster.notify_with_payload(
+                "whatsapp_message",
+                ChangeAction::Created,
+                Some(log_id),
+                &event_payload,
+            );
             Ok(ApiResponse::message("Message sent"))
         }
         Err(e) => {
@@ -324,9 +381,28 @@ pub async fn send_deal_whatsapp_message(
                 params! { "error" => &e, "id" => log_id },
             )
             .map_err(map_mysql_err)?;
-            state
-                .broadcaster
-                .notify("whatsapp_message", ChangeAction::Created, Some(log_id));
+            let event_payload = serde_json::json!({
+                "id": log_id,
+                "session_id": session_id,
+                "deal_id": id,
+                "contact_id": contact_id,
+                "phone": &phone,
+                "direction": "outbound",
+                "message": message,
+                "media_url": &payload.media_url,
+                "wa_message_id": null,
+                "sender_name": "Salesbot",
+                "status": "failed",
+                "error_message": &e,
+                "sent_at": null,
+                "created_at": null
+            });
+            state.broadcaster.notify_with_payload(
+                "whatsapp_message",
+                ChangeAction::Created,
+                Some(log_id),
+                &event_payload,
+            );
             Err(AppError::BadRequest(e))
         }
     }

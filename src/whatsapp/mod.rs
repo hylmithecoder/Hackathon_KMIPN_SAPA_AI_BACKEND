@@ -16,6 +16,7 @@ use whatsapp_rust::Jid;
 use whatsapp_rust::NodeFilter;
 use whatsapp_rust::TokioRuntime;
 use whatsapp_rust::bot::Bot;
+use whatsapp_rust::download::Downloadable;
 use whatsapp_rust::media::{self, DocumentOptions, ImageOptions, VideoOptions};
 use whatsapp_rust::send::SendOptions;
 use whatsapp_rust::store::SqliteStore;
@@ -25,6 +26,7 @@ use whatsapp_rust_ureq_http_client::UreqHttpClient;
 use wacore::types::events::Event;
 use wacore::types::presence::ReceiptType;
 use wacore::download::MediaType;
+use uuid::Uuid;
 
 use crate::ws::event::ChangeAction;
 use crate::ws::Broadcaster;
@@ -37,6 +39,40 @@ pub use formatmessage::normalize_phone;
 const WA_STORE_DIR: &str = "storage/whatsapp";
 const UPLOAD_DIR: &str = "storage/uploads";
 const MAX_OUTBOUND_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_INBOUND_MEDIA_BYTES: usize = 64 * 1024 * 1024;
+
+fn inbound_media_extension(mime_type: Option<&str>, fallback: &'static str) -> &'static str {
+    match mime_type.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => fallback,
+    }
+}
+
+async fn store_inbound_media(
+    client: &Client,
+    downloadable: &dyn Downloadable,
+    extension: &str,
+) -> Result<String, String> {
+    let bytes = client
+        .download(downloadable)
+        .await
+        .map_err(|error| format!("WhatsApp media download failed: {error}"))?;
+    if bytes.is_empty() || bytes.len() > MAX_INBOUND_MEDIA_BYTES {
+        return Err("WhatsApp media is empty or exceeds the 64 MiB limit".into());
+    }
+    tokio::fs::create_dir_all(UPLOAD_DIR)
+        .await
+        .map_err(|error| format!("could not create inbound media directory: {error}"))?;
+    let file_name = format!("wa-inbound-{}.{}", Uuid::new_v4(), extension);
+    let path = Path::new(UPLOAD_DIR).join(&file_name);
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|error| format!("could not save inbound media: {error}"))?;
+    Ok(format!("/uploads/{file_name}"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutboundMediaKind {
@@ -141,6 +177,7 @@ impl WaInner {
         text: &str,
         sender_name: &str,
         direction: &str,
+        media_url: Option<&str>,
     ) {
         if text.trim().is_empty() {
             return;
@@ -270,8 +307,8 @@ impl WaInner {
         let status_val = if direction == "inbound" { "delivered" } else { "sent" };
 
         if let Err(e) = conn.exec_drop(
-            "INSERT INTO whatsapp_messages (session_id, deal_id, contact_id, phone, direction, message, wa_message_id, sender_name, status, sent_at) \
-             VALUES (:session_id, :deal_id, :contact_id, :phone, :direction, :message, :wa_message_id, :sender_name, :status, NOW())",
+            "INSERT INTO whatsapp_messages (session_id, deal_id, contact_id, phone, direction, message, media_url, wa_message_id, sender_name, status, sent_at) \
+             VALUES (:session_id, :deal_id, :contact_id, :phone, :direction, :message, :media_url, :wa_message_id, :sender_name, :status, NOW())",
             params! {
                 "session_id" => session_id,
                 "deal_id" => deal_id,
@@ -279,6 +316,7 @@ impl WaInner {
                 "phone" => phone,
                 "direction" => direction,
                 "message" => text,
+                "media_url" => media_url,
                 "wa_message_id" => wa_message_id,
                 "sender_name" => sender_name,
                 "status" => status_val,
@@ -287,7 +325,28 @@ impl WaInner {
             crate::log_err!("WA message persist: failed to insert: {e}");
         } else {
             let msg_id = conn.last_insert_id();
-            self.broadcaster.notify("whatsapp_message", ChangeAction::Created, Some(msg_id));
+            let event_payload = serde_json::json!({
+                "id": msg_id,
+                "session_id": session_id,
+                "deal_id": deal_id,
+                "contact_id": if contact_id > 0 { Some(contact_id) } else { None },
+                "phone": phone,
+                "direction": direction,
+                "message": text,
+                "media_url": media_url,
+                "wa_message_id": wa_message_id,
+                "sender_name": sender_name,
+                "status": status_val,
+                "error_message": null,
+                "sent_at": chrono::Utc::now().to_rfc3339(),
+                "created_at": null
+            });
+            self.broadcaster.notify_with_payload(
+                "whatsapp_message",
+                ChangeAction::Created,
+                Some(msg_id),
+                &event_payload,
+            );
             crate::log_info!("WA message persisted: {direction} from/to {phone} (deal_id={deal_id:?}, msg_id={msg_id})");
         }
     }
@@ -428,20 +487,53 @@ impl WaSession {
                                     continue;
                                 }
                                 let phone = chat.user.clone();
-                                let text = if let Some(c) = &msg.message.conversation {
-                                    c.clone()
+                                let (text, media_url) = if let Some(c) = &msg.message.conversation {
+                                    (c.clone(), None)
                                 } else if let Some(e) = msg.message.extended_text_message.as_option() {
-                                    e.text.clone().unwrap_or_default()
+                                    (e.text.clone().unwrap_or_default(), None)
                                 } else if let Some(i) = msg.message.image_message.as_option() {
-                                    i.caption.clone().unwrap_or_else(|| "[Gambar]".to_string())
+                                    let extension =
+                                        inbound_media_extension(i.mimetype.as_deref(), "jpg");
+                                    let media_url =
+                                        match store_inbound_media(client.as_ref(), i, extension).await {
+                                            Ok(url) => Some(url),
+                                            Err(error) => {
+                                                log_err!("{error}");
+                                                None
+                                            }
+                                        };
+                                    (
+                                        i.caption
+                                            .clone()
+                                            .unwrap_or_else(|| "[Gambar]".to_string()),
+                                        media_url,
+                                    )
                                 } else if let Some(v) = msg.message.video_message.as_option() {
-                                    v.caption.clone().unwrap_or_else(|| "[Video]".to_string())
-                                } else if msg.message.sticker_message.is_set() {
-                                    "[Stiker]".to_string()
+                                    (
+                                        v.caption
+                                            .clone()
+                                            .unwrap_or_else(|| "[Video]".to_string()),
+                                        None,
+                                    )
+                                } else if let Some(sticker) = msg.message.sticker_message.as_option() {
+                                    let media_url =
+                                        match store_inbound_media(client.as_ref(), sticker, "webp").await {
+                                            Ok(url) => Some(url),
+                                            Err(error) => {
+                                                log_err!("{error}");
+                                                None
+                                            }
+                                        };
+                                    ("[Stiker]".to_string(), media_url)
                                 } else if let Some(d) = msg.message.document_message.as_option() {
-                                    d.caption.clone().unwrap_or_else(|| "[Dokumen]".to_string())
+                                    (
+                                        d.caption
+                                            .clone()
+                                            .unwrap_or_else(|| "[Dokumen]".to_string()),
+                                        None,
+                                    )
                                 } else {
-                                    String::new()
+                                    (String::new(), None)
                                 };
 
                                 if text.is_empty() {
@@ -449,7 +541,14 @@ impl WaSession {
                                 }
                                 let wa_message_id = msg.info.id.to_string();
                                 let sender_name = msg.info.push_name.as_str();
-                                inner.persist_message(&phone, &wa_message_id, &text, sender_name, direction);
+                                inner.persist_message(
+                                    &phone,
+                                    &wa_message_id,
+                                    &text,
+                                    sender_name,
+                                    direction,
+                                    media_url.as_deref(),
+                                );
                             }
                         }
                         other => {

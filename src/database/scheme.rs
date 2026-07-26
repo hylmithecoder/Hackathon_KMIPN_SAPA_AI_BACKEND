@@ -167,9 +167,21 @@ pub struct Product {
     pub category: Option<String>,
     pub unit_price: f64,
     pub currency: String,
+    pub file_url: Option<String>,
+    pub file_name: Option<String>,
+    pub files: Vec<ProductFile>,
     pub is_active: bool,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProductFile {
+    pub id: u64,
+    pub product_id: u64,
+    pub file_url: String,
+    pub file_name: String,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

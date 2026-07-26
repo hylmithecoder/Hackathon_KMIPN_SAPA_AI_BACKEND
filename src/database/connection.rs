@@ -267,9 +267,22 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
             category VARCHAR(100) NULL,
             unit_price DECIMAL(18,2) NOT NULL DEFAULT 0.00,
             currency VARCHAR(3) NOT NULL DEFAULT 'IDR',
+            file_url VARCHAR(500) NULL,
+            file_name VARCHAR(255) NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )",
+    )?;
+    conn.query_drop(
+        "CREATE TABLE IF NOT EXISTS product_files (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            product_id BIGINT NOT NULL,
+            file_url VARCHAR(500) NOT NULL,
+            file_name VARCHAR(255) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_product_file_url (product_id, file_url),
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
         )",
     )?;
 
@@ -586,6 +599,14 @@ pub fn init_db() -> Result<Pool, mysql::Error> {
     )?;
     ensure_column(&mut conn, "campaigns", "message_template", "TEXT NULL")?;
     ensure_column(&mut conn, "quotes", "template_id", "BIGINT NULL")?;
+    ensure_column(&mut conn, "products", "file_url", "VARCHAR(500) NULL")?;
+    ensure_column(&mut conn, "products", "file_name", "VARCHAR(255) NULL")?;
+    conn.query_drop(
+        "INSERT IGNORE INTO product_files (product_id, file_url, file_name)
+         SELECT id, file_url, COALESCE(file_name, 'Product attachment')
+         FROM products
+         WHERE file_url IS NOT NULL AND file_url <> ''",
+    )?;
 
     Ok(pool)
 }

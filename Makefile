@@ -10,8 +10,12 @@
 #   make watch        → auto-reload dev server on file changes
 
 BIN_NAME    := api_sapaai
-NIGHTLY_RUSTC := $(shell rustup which --toolchain nightly rustc 2>/dev/null)
-CARGO := RUSTC=$(NIGHTLY_RUSTC) rustup run nightly cargo
+# `make` is expected to run inside shell.nix. Keep Cargo, rustc and the linker
+# from that same Nix environment; mixing Nix Cargo with a rustup rustc leaves
+# linker wrappers pointing at garbage-collected /nix/store paths.
+CARGO := cargo
+MUSL_CARGO := cargo-musl
+MUSL_TARGET_DIR ?= target-musl
 
 .DEFAULT_GOAL := run
 .PHONY: run build build-static check test fmt clean watch help
@@ -27,8 +31,11 @@ build:
 	$(CARGO) build --release
 
 ## build-static: build fully statically linked release binary (musl)
+# Nix's musl cross-rustc defaults to `-crt-static` so its outputs can refer to
+# Nix store libraries. Override that setting on the final binary link to make
+# this artifact portable outside the Nix store.
 build-static:
-	CFLAGS_x86_64_unknown_linux_musl="$(MUSL_CFLAGS)" CFLAGS="$(MUSL_CFLAGS)" $(CARGO) build --release --target x86_64-unknown-linux-musl
+	CARGO_TARGET_DIR="$(MUSL_TARGET_DIR)" CFLAGS_x86_64_unknown_linux_musl="$(MUSL_CFLAGS)" CFLAGS="$(MUSL_CFLAGS)" $(MUSL_CARGO) rustc --release --target x86_64-unknown-linux-musl --bin "$(BIN_NAME)" -- -C target-feature=+crt-static
 
 ## check: type-check without producing a binary
 check:
@@ -60,4 +67,3 @@ watch:
 ## help: list available targets
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
-

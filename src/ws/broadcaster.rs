@@ -2,6 +2,7 @@
 
 use crate::log_info;
 use crate::ws::event::{ChangeAction, ChangeEvent, ChangePayload};
+use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -62,6 +63,22 @@ impl Broadcaster {
         self.broadcast(ChangePayload::new(entity, action).id_opt(id).into_event());
     }
 
+    /// Broadcast a change event containing the complete current record.
+    pub fn notify_with_payload<T: Serialize>(
+        &self,
+        entity: &'static str,
+        action: ChangeAction,
+        id: Option<u64>,
+        payload: &T,
+    ) {
+        self.broadcast(
+            ChangePayload::new(entity, action)
+                .id_opt(id)
+                .payload(payload)
+                .into_event(),
+        );
+    }
+
     /// Return the number of currently active receivers.
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
@@ -91,6 +108,23 @@ mod tests {
         assert_eq!(event["entity"], "contact");
         assert_eq!(event["action"], "created");
         assert_eq!(event["id"], 1);
+    }
+
+    #[test]
+    fn broadcaster_includes_serialized_payload() {
+        let broadcaster = Broadcaster::new();
+        let mut rx = broadcaster.subscribe();
+
+        broadcaster.notify_with_payload(
+            "product",
+            ChangeAction::Updated,
+            Some(7),
+            &serde_json::json!({ "id": 7, "name": "Realtime product" }),
+        );
+
+        let event: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().expect("should receive a message")).unwrap();
+        assert_eq!(event["payload"]["name"], "Realtime product");
     }
 
     #[test]

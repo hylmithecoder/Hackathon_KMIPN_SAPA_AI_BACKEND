@@ -1,20 +1,17 @@
 //! Reusable middleware.
 
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     extract::Request,
-    http::{HeaderName, StatusCode, header::HeaderValue},
+    http::{HeaderName, header::HeaderValue},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use std::time::Instant;
 use uuid::Uuid;
 
 /// Header used to expose the per-request correlation id to clients.
 const REQUEST_ID_HEADER: &str = "x-request-id";
-
-/// Maximum body size in bytes to buffer for access logging (2 MB).
-const MAX_LOG_BODY_SIZE: usize = 2 * 1024 * 1024;
 
 /// ANSI color for the status code based on its class.
 ///
@@ -62,72 +59,28 @@ pub async fn request_id(req: Request<Body>, next: Next) -> Response {
     response
 }
 
-/// Verbose access log of every request and response, including query parameters, request payload, status, and response body.
+/// Access log of every request and response.
+///
+/// Request and response bodies remain untouched so logging cannot reject large
+/// uploads, consume streaming bodies, or replace an otherwise valid response.
 pub async fn access_log(req: Request<Body>, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path().to_string();
     let query_str = uri.query().unwrap_or("").to_string();
 
-    // Extract and buffer incoming request body
-    let (req_parts, req_body) = req.into_parts();
-    let req_bytes = match to_bytes(req_body, MAX_LOG_BODY_SIZE).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            crate::log_err!("Failed to read request body for logging: {}", err);
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "success": false,
-                    "message": "Failed to read request body"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    // Reconstruct Request with original body bytes
-    let req = Request::from_parts(req_parts, Body::from(req_bytes));
-
     let start = Instant::now();
     let response = next.run(req).await;
     let duration = start.elapsed();
     let status = response.status();
 
-    // Extract and buffer response body
-    let (resp_parts, resp_body) = response.into_parts();
-    let resp_bytes = match to_bytes(resp_body, MAX_LOG_BODY_SIZE).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            crate::log_err!("Failed to read response body for logging: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({
-                    "success": false,
-                    "message": "Failed to read response body"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let resp_payload_display = if resp_bytes.is_empty() {
-        "-".to_string()
-    } else {
-        std::str::from_utf8(&resp_bytes)
-            .unwrap_or("[binary data]")
-            .to_string()
-    };
-
-    // Reconstruct Response with original body bytes
-    let response = Response::from_parts(resp_parts, Body::from(resp_bytes));
-
-    let (method_str, status_code, duration_fmt) = (method.as_str(), status.as_u16(), format_duration(duration));
+    let (method_str, status_code, duration_fmt) =
+        (method.as_str(), status.as_u16(), format_duration(duration));
     let color = status_color(status_code);
 
     if query_str.is_empty() {
         println!(
-            "{}[{}] \x1b[0m{} {} -> {}{} \x1b[0min {} | {}",
+            "{}[{}] \x1b[0m{} {} -> {}{} \x1b[0min {}",
             color,
             crate::utils::debugger::timestamp(),
             method_str,
@@ -135,11 +88,10 @@ pub async fn access_log(req: Request<Body>, next: Next) -> Response {
             color,
             status_code,
             duration_fmt,
-            resp_payload_display,
         );
     } else {
         println!(
-            "{}[{}] \x1b[0m{} {}?{} -> {}{} \x1b[0min {} | {}",
+            "{}[{}] \x1b[0m{} {}?{} -> {}{} \x1b[0min {}",
             color,
             crate::utils::debugger::timestamp(),
             method_str,
@@ -148,7 +100,6 @@ pub async fn access_log(req: Request<Body>, next: Next) -> Response {
             color,
             status_code,
             duration_fmt,
-            resp_payload_display,
         );
     }
 
@@ -160,7 +111,7 @@ mod tests {
     use super::*;
     use axum::{
         Router,
-        body::Body,
+        body::{Body, to_bytes},
         http::{Request, StatusCode},
         middleware::from_fn,
         routing::{get, post},
@@ -201,9 +152,39 @@ mod tests {
         let response = app.oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body_bytes = to_bytes(response.into_body(), MAX_LOG_BODY_SIZE)
+        let body_bytes = to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
         assert_eq!(&body_bytes[..], b"echo: hello world");
+    }
+
+    #[tokio::test]
+    async fn test_access_log_preserves_large_request_and_response_bodies() {
+        const LARGE_BODY_SIZE: usize = 3 * 1024 * 1024;
+
+        let app = Router::new()
+            .route(
+                "/echo",
+                post(|request: Request<Body>| async move {
+                    to_bytes(request.into_body(), LARGE_BODY_SIZE)
+                        .await
+                        .unwrap()
+                }),
+            )
+            .layer(from_fn(access_log));
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/echo")
+            .body(Body::from(vec![b'x'; LARGE_BODY_SIZE]))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), LARGE_BODY_SIZE)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), LARGE_BODY_SIZE);
     }
 }

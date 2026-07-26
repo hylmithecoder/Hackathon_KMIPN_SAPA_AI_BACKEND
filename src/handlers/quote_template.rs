@@ -203,9 +203,12 @@ pub async fn create_quote_template(
     let id = conn.last_insert_id();
     insert_template_items(&mut conn, id, &payload.items)?;
     let template = QuoteTemplate { id, ..template };
-    state
-        .broadcaster
-        .notify("quote_template", ChangeAction::Created, Some(id));
+    state.broadcaster.notify_with_payload(
+        "quote_template",
+        ChangeAction::Created,
+        Some(id),
+        &template,
+    );
     Ok((StatusCode::CREATED, ApiResponse::success(template)))
 }
 
@@ -288,9 +291,12 @@ pub async fn update_quote_template(
         .map_err(map_mysql_err)?;
         insert_template_items(&mut conn, id, &items)?;
     }
-    state
-        .broadcaster
-        .notify("quote_template", ChangeAction::Updated, Some(id));
+    state.broadcaster.notify_with_payload(
+        "quote_template",
+        ChangeAction::Updated,
+        Some(id),
+        &template,
+    );
     Ok(ApiResponse::success(template))
 }
 
@@ -405,7 +411,7 @@ pub async fn instantiate_quote_template(
     };
     state
         .broadcaster
-        .notify("quote", ChangeAction::Created, Some(quote_id));
+        .notify_with_payload("quote", ChangeAction::Created, Some(quote_id), &quote);
     Ok((StatusCode::CREATED, ApiResponse::success(quote)))
 }
 

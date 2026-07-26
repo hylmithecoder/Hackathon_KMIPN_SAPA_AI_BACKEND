@@ -38,6 +38,10 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
 
+    /// Request body or uploaded file exceeds an application limit.
+    #[error("{0}")]
+    PayloadTooLarge(String),
+
     /// Authentication failure.
     #[error("Unauthorized")]
     Unauthorized,
@@ -61,6 +65,7 @@ impl AppError {
             AppError::Validation(msg) | AppError::BadRequest(msg) | AppError::Conflict(msg) => {
                 msg.clone()
             }
+            AppError::PayloadTooLarge(msg) => msg.clone(),
             AppError::NotFound => "Not found".to_string(),
             AppError::Unauthorized => "Unauthorized".to_string(),
             AppError::Forbidden => "Forbidden".to_string(),
@@ -72,6 +77,7 @@ impl AppError {
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Validation(_) | AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::Conflict(_) => StatusCode::CONFLICT,
@@ -105,6 +111,10 @@ mod tests {
         assert_eq!(
             AppError::Validation("bad".into()).status(),
             StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            AppError::PayloadTooLarge("too large".into()).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
         );
         assert_eq!(
             AppError::Conflict("dup".into()).status(),

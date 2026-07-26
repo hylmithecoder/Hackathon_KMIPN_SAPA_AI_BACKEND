@@ -138,9 +138,12 @@ pub async fn create_price_book(
         created_at: None,
         updated_at: None,
     };
-    state
-        .broadcaster
-        .notify("price_book", ChangeAction::Created, Some(id));
+    state.broadcaster.notify_with_payload(
+        "price_book",
+        ChangeAction::Created,
+        Some(id),
+        &price_book,
+    );
     Ok((StatusCode::CREATED, ApiResponse::success(price_book)))
 }
 
@@ -203,7 +206,7 @@ pub async fn update_price_book(
     ).map_err(map_mysql_err)?;
     state
         .broadcaster
-        .notify("price_book", ChangeAction::Updated, Some(id));
+        .notify_with_payload("price_book", ChangeAction::Updated, Some(id), &item);
     Ok(ApiResponse::success(item))
 }
 

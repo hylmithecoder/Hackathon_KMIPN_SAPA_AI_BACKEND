@@ -1,4 +1,12 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+fn deserialize_optional_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateQuoteDto {
@@ -16,11 +24,14 @@ pub struct CreateQuoteDto {
 pub struct UpdateQuoteDto {
     pub quote_number: Option<String>,
     pub issue_date: Option<String>,
-    pub expiry_date: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub expiry_date: Option<Option<String>>,
     pub tax_rate: Option<f64>,
     pub currency: Option<String>,
     pub status: Option<String>,
-    pub notes: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub notes: Option<Option<String>>,
+    pub items: Option<Vec<CreateQuoteItemDto>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,4 +55,25 @@ pub struct UpdateQuoteItemDto {
 #[derive(Debug, Deserialize)]
 pub struct QuoteStatusDto {
     pub status: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UpdateQuoteDto;
+
+    #[test]
+    fn update_distinguishes_omitted_and_explicitly_null_fields() {
+        let omitted: UpdateQuoteDto =
+            serde_json::from_value(serde_json::json!({})).expect("empty update should deserialize");
+        assert_eq!(omitted.expiry_date, None);
+        assert_eq!(omitted.notes, None);
+
+        let cleared: UpdateQuoteDto = serde_json::from_value(serde_json::json!({
+            "expiry_date": null,
+            "notes": null
+        }))
+        .expect("nullable update should deserialize");
+        assert_eq!(cleared.expiry_date, Some(None));
+        assert_eq!(cleared.notes, Some(None));
+    }
 }
